@@ -85,7 +85,7 @@ fn verify_with_key<R: Read + Seek>(
     }
     UnparsedPublicKey::new(&ED25519, key)
         .verify(bytes, signature)
-        .map_err(|_| "Invalid release signature")?;
+        .map_err(|_| BAD_SIGNATURE)?;
     let manifest: LinuxReleaseManifest =
         serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
     if manifest.channel != ReleaseChannel::current() {
@@ -242,33 +242,61 @@ fn digest_reader(reader: &mut impl Read) -> Result<(u64, String), String> {
     Ok((size, format!("{:x}", digest.finalize())))
 }
 
-/// The trust root is compiled into the independently provisioned verifier;
-/// payloads and runtime environment variables cannot choose it.
+/// The trust root is compiled into the verifier; payloads and runtime
+/// environment variables cannot choose it. An evaluation build trusts only its
+/// independently provisioned evaluation key and evaluation manifests. A
+/// production build trusts the channel's keys in linux-publisher-keys.json and
+/// only production manifests; with none listed, installation stays disabled.
 pub fn verify_release<R: Read + Seek>(
     bytes: &[u8],
     signature: &[u8],
     archive: &mut R,
 ) -> Result<LinuxReleaseManifest, String> {
-    if !cfg!(feature = "linux-evaluation-verifier") {
-        return Err(
-            "Linux publisher trust is not provisioned; protected installation disabled".into(),
-        );
-    }
-    let encoded = option_env!("APEX_LINUX_EVALUATION_TRUST_ROOT")
-        .ok_or("Linux publisher trust is not provisioned; protected installation disabled")?;
-    use base64::Engine;
-    let key = base64::engine::general_purpose::STANDARD
-        .decode(encoded)
-        .map_err(|_| "Invalid compiled evaluation trust root")?;
-    if key.len() != 32 {
-        return Err("Invalid compiled evaluation trust root".into());
+    let evaluation = cfg!(feature = "linux-evaluation-verifier");
+    let roots = if evaluation {
+        option_env!("APEX_LINUX_EVALUATION_TRUST_ROOT").unwrap_or("")
+    } else {
+        env!("APEX_LINUX_PUBLISHER_TRUST_ROOTS")
+    };
+    let keys = trust_roots(roots)?;
+    if keys.is_empty() {
+        return Err(NOT_PROVISIONED.into());
     }
     let arch = match std::env::consts::ARCH {
         "aarch64" => "arm64",
         "x86_64" => "x64",
         _ => return Err("Unsupported architecture".into()),
     };
-    verify_with_key(bytes, signature, &key, arch, true, archive)
+    // Try the next key only when this one didn't sign it; once a key's
+    // signature holds, that key's verdict on the release is final.
+    for key in &keys {
+        archive.seek(std::io::SeekFrom::Start(0)).map_err(|e| e.to_string())?;
+        match verify_with_key(bytes, signature, key, arch, evaluation, archive) {
+            Err(error) if error == BAD_SIGNATURE => continue,
+            verdict => return verdict,
+        }
+    }
+    Err(BAD_SIGNATURE.into())
+}
+
+const BAD_SIGNATURE: &str = "Invalid release signature";
+
+pub const NOT_PROVISIONED: &str = "Linux publisher trust is not provisioned; protected installation disabled";
+
+/// Comma-separated base64 Ed25519 keys, each exactly 32 bytes.
+fn trust_roots(encoded: &str) -> Result<Vec<Vec<u8>>, String> {
+    use base64::Engine;
+    encoded
+        .split(',')
+        .filter(|key| !key.is_empty())
+        .map(|key| {
+            base64::engine::general_purpose::STANDARD
+                .decode(key)
+                .ok()
+                .filter(|key| key.len() == 32)
+                .ok_or_else(|| "Invalid compiled Linux trust root".to_string())
+        })
+        .collect()
 }
 
 /// Refuse symlinks and writable ancestors, including the target itself.
@@ -706,6 +734,45 @@ mod tests {
             &mut Cursor::new(archive)
         )
         .is_err());
+    }
+    #[test]
+    fn a_channel_without_publisher_keys_refuses_every_release() {
+        if cfg!(feature = "linux-evaluation-verifier") || !env!("APEX_LINUX_PUBLISHER_TRUST_ROOTS").is_empty() {
+            return;
+        }
+        let (signed, _, archive) = fixture();
+        assert_eq!(
+            verify_release(signed.payload.as_bytes(), b"sig", &mut Cursor::new(archive)).unwrap_err(),
+            NOT_PROVISIONED
+        );
+    }
+    #[test]
+    fn the_compiled_publisher_keys_decode() {
+        for key in trust_roots(env!("APEX_LINUX_PUBLISHER_TRUST_ROOTS")).unwrap() {
+            assert_eq!(key.len(), 32);
+        }
+    }
+    #[test]
+    fn trust_roots_parse_strictly() {
+        use base64::Engine;
+        let one = base64::engine::general_purpose::STANDARD.encode([7u8; 32]);
+        let two = base64::engine::general_purpose::STANDARD.encode([9u8; 32]);
+        assert!(trust_roots("").unwrap().is_empty());
+        assert_eq!(trust_roots(&format!("{one},{two}")).unwrap(), vec![vec![7u8; 32], vec![9u8; 32]]);
+        assert!(trust_roots("not-base64!").is_err());
+        assert!(trust_roots(&base64::engine::general_purpose::STANDARD.encode([1u8; 31])).is_err());
+    }
+    #[test]
+    fn a_second_key_signs_while_a_wrong_key_is_skipped() {
+        let (signed, key, archive) = fixture();
+        use base64::Engine;
+        let signature = base64::engine::general_purpose::STANDARD.decode(&signed.signature).unwrap();
+        let wrong = [3u8; 32];
+        assert_eq!(
+            verify_with_key(signed.payload.as_bytes(), &signature, &wrong, "arm64", true, &mut Cursor::new(&archive)).unwrap_err(),
+            BAD_SIGNATURE
+        );
+        assert!(verify_with_key(signed.payload.as_bytes(), &signature, &key, "arm64", true, &mut Cursor::new(&archive)).is_ok());
     }
     #[test]
     fn user_writable_ancestor_is_rejected_without_changing_authority() {

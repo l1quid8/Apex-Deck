@@ -5,11 +5,14 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { createRequire } from 'node:module';
+import { spawnSync } from 'node:child_process';
 import {
   LINUX_FEED_NAME,
   appImageName,
   assembleLinuxRelease,
   fetchLinuxFeed,
+  inspectInstaller,
+  installerName,
   linuxJobsGreen,
   loadJobsUntilGreen,
   parseLinuxFeed,
@@ -50,6 +53,27 @@ function assembled({ buildNumber = 1 } = {}) {
     builds: { x86_64: fakeBuild('x86_64', { buildNumber }), arm64: fakeBuild('arm64', { buildNumber }) },
   });
   return { out, feed };
+}
+
+/** A sealed installer folder: a tar holding a manifest signed by `privateKey`. */
+function fakeInstaller(arch, { privateKey, buildNumber = 1, manifest = {}, metadata = {} } = {}) {
+  const dir = tmp();
+  const name = installerName(TAG, arch);
+  const top = name.replace(/\.tar$/, '');
+  const tree = path.join(tmp(), top, 'release');
+  fs.mkdirSync(tree, { recursive: true });
+  const body = Buffer.from(JSON.stringify({ channel: 'nightly', version: VERSION, commit: SHA_NEW, buildNumber,
+    arch: arch === 'x86_64' ? 'x64' : 'arm64', protocol: 1, evaluation: false, ...manifest }));
+  fs.writeFileSync(path.join(tree, 'manifest.json'), body);
+  fs.writeFileSync(path.join(tree, 'manifest.sig'), crypto.sign(null, body, privateKey));
+  const archive = path.join(dir, name);
+  const made = spawnSync('tar', ['-cf', archive, '-C', path.dirname(path.dirname(tree)), top]);
+  assert.equal(made.status, 0, String(made.stderr));
+  const bytes = fs.readFileSync(archive);
+  fs.writeFileSync(`${archive}.sha256`, `${sha256(bytes)}  ${name}\n`);
+  fs.writeFileSync(`${archive}.json`, JSON.stringify({ name, channel: 'nightly', version: VERSION, commit: SHA_NEW, buildNumber,
+    arch: arch === 'x86_64' ? 'x64' : 'arm64', appImage: appImageName(TAG, arch), size: bytes.length, sha256: sha256(bytes), trust: 'production', ...metadata }));
+  return dir;
 }
 
 const greenRun = (sha, created = '2026-11-25T06:00:00Z') => ({ head_branch: 'main', status: 'completed', conclusion: 'success', event: 'push', head_sha: sha, created_at: created, id: 1 });
@@ -360,13 +384,50 @@ test('an interrupted rolling-feed upload never restarts Linux build numbers', ()
 test('the Linux workflow needs no Apple or Windows secrets and writes only the Linux feed', () => {
   const text = fs.readFileSync(new URL('../.github/workflows/nightly-linux.yml', import.meta.url), 'utf8');
   const workflow = yaml.load(text);
-  assert.deepEqual(Object.keys(workflow.jobs), ['plan', 'build', 'publish']);
-  assert.doesNotMatch(text, /secrets\.|MACOS_|APPLE_|WINDOWS_/);
+  assert.deepEqual(Object.keys(workflow.jobs), ['plan', 'build', 'sign', 'verify', 'publish']);
+  assert.doesNotMatch(text, /MACOS_|APPLE_|WINDOWS_/);
+  // The only secret is the Linux Nightly publisher key, only in the sign job,
+  // which runs in the main-only environment and runs no npm or cargo code.
+  assert.deepEqual(text.match(/secrets\.[A-Z_]+/g), ['secrets.LINUX_NIGHTLY_SIGNING_KEY']);
+  const sign = workflow.jobs.sign;
+  assert.equal(sign.environment, 'linux-nightly-signing');
+  assert.match(JSON.stringify(sign.steps), /secrets\.LINUX_NIGHTLY_SIGNING_KEY/);
+  for (const name of ['plan', 'build', 'verify', 'publish']) assert.doesNotMatch(JSON.stringify(workflow.jobs[name]), /secrets\./, name);
+  assert.doesNotMatch(JSON.stringify(sign.steps), /npm |cargo |npx /);
+  for (const step of sign.steps.filter((row) => row.uses)) assert.match(step.uses, /@[0-9a-f]{40}$/, `${step.uses} is pinned`);
+  assert.equal(sign.steps[0].with.ref, '${{ github.sha }}');
+  assert.deepEqual(workflow.jobs.verify.needs, ['plan', 'sign']);
   assert.doesNotMatch(text, /nightly-release\.mjs|nightly-macos/);
   assert.equal(workflow.concurrency.group, 'nightly-linux');
   const build = workflow.jobs.build;
   assert.deepEqual(build.strategy.matrix.include.map((row) => row.arch), ['x86_64', 'arm64']);
   assert.equal(build.env.APEX_BUILD_NUMBER, '${{ needs.plan.outputs.build_number }}');
   assert.equal(build.env.APEX_NIGHTLY_COMMIT, '${{ needs.plan.outputs.commit }}');
-  assert.deepEqual(workflow.jobs.publish.needs, ['plan', 'build']);
+  assert.deepEqual(workflow.jobs.publish.needs, ['plan', 'build', 'verify']);
+});
+
+// Installers are checked with the system tar on /usr/bin:/bin, as the Linux
+// publish job does; Windows runs this suite too and has no tar there.
+test('the feed carries protected installers only when given, and each must be signed by a committed key', { skip: process.platform === 'win32' && 'the Linux publish job reads installers with /usr/bin/tar' }, () => {
+  const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
+  const other = crypto.generateKeyPairSync('ed25519');
+  const builds = { x86_64: fakeBuild('x86_64'), arm64: fakeBuild('arm64') };
+  const installers = { x86_64: fakeInstaller('x86_64', { privateKey }), arm64: fakeInstaller('arm64', { privateKey }) };
+  const out = tmp();
+  const feed = assembleLinuxRelease({ out, date: DATE, commit: SHA_NEW, buildNumber: 1, version: VERSION, builds, installers, keys: [publicKey] });
+  assert.deepEqual(feed.installers.map((entry) => entry.name), [installerName(TAG, 'x86_64'), installerName(TAG, 'arm64')]);
+  for (const entry of feed.installers) {
+    for (const suffix of ['', '.sha256', '.json']) assert.ok(fs.existsSync(path.join(out, `${entry.name}${suffix}`)));
+  }
+  assert.deepEqual(parseLinuxFeed(JSON.parse(fs.readFileSync(path.join(out, LINUX_FEED_NAME), 'utf8'))).installers, feed.installers);
+  assert.equal(assembled().feed.installers, undefined, 'a feed without installers still parses');
+
+  const check = (dir, keys) => inspectInstaller(dir, { arch: 'x86_64', version: VERSION, commit: SHA_NEW, buildNumber: 1, tag: TAG, keys }).errors.join('; ');
+  assert.match(check(fakeInstaller('x86_64', { privateKey: other.privateKey }), [publicKey]), /not signed by a committed Nightly publisher key/);
+  assert.match(check(installers.x86_64, []), /no Nightly publisher key is committed/);
+  assert.match(check(fakeInstaller('x86_64', { privateKey, manifest: { evaluation: true } }), [publicKey]), /manifest does not match.*evaluation/);
+  assert.match(check(fakeInstaller('x86_64', { privateKey, manifest: { buildNumber: 2 } }), [publicKey]), /manifest does not match.*buildNumber/);
+  assert.match(check(fakeInstaller('x86_64', { privateKey, metadata: { trust: 'evaluation' } }), [publicKey]), /json does not match.*trust/);
+  assert.throws(() => assembleLinuxRelease({ out: tmp(), date: DATE, commit: SHA_NEW, buildNumber: 1, version: VERSION, builds,
+    installers: { x86_64: installers.x86_64 }, keys: [publicKey] }), /one --installer for each/);
 });

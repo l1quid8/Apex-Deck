@@ -2,6 +2,21 @@
 
 Status: **incomplete; protected desktop approvals are not supported yet**.
 
+## 2026-11-26 production publisher trust for Nightly
+
+The production broker now trusts the Ed25519 keys listed per channel in
+`crates/apex-provenance/linux-publisher-keys.json`, compiled in by build.rs, and
+only production (`evaluation: false`) manifests. An empty list keeps protected
+installation disabled with the same refusal as before; Stable is still empty.
+Linux Nightly signs each installer in a separate `sign` job in the main-only
+`linux-nightly-signing` environment. That job runs no npm or cargo code, takes
+identity from the plan, and refuses a manifest that doesn't name the planned
+commit, build number and payload. A `verify` job runs each bundle's own
+production broker against it on that architecture before publishing. This is a
+custody boundary for the key, not an attestation of the build job's payload. See
+[Linux Nightly](../linux-nightly.md#publisher-key). Earlier sections that call
+production trust unprovisioned describe the state before this change.
+
 ## 2026-11-14 graphical evaluation acceptance
 
 A disposable native ARM64 Ubuntu 24.04 systemd/logind session with Xvfb and

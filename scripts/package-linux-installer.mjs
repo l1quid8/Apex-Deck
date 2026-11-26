@@ -92,12 +92,17 @@ export function buildBundle({ unpacked, provenance, appimageJson, out, privateKe
     const top = path.join(work, 'bundle', name);
     mkdirSync(path.join(top, 'release'), { recursive: true });
     renameSync(`${prefix}.manifest.json`, path.join(top, 'release/manifest.json'));
-    renameSync(`${prefix}.sig`, path.join(top, 'release/manifest.sig'));
+    if (privateKey) renameSync(`${prefix}.sig`, path.join(top, 'release/manifest.sig'));
     renameSync(`${prefix}.tar`, path.join(top, 'release/payload.tar'));
     writeFileSync(path.join(top, 'apex-deck-install'), installer, { mode: 0o755 });
     mkdirSync(out, { recursive: true });
-    const artifact = path.join(path.resolve(out), `${name}.tar`);
+    // Unsigned: the production manifest and payload, for the signing job to seal.
+    const artifact = path.join(path.resolve(out), privateKey ? `${name}.tar` : `${name}.unsigned.tar`);
     execFileSync('tar', ['--create', '--file', artifact, '--owner=0', '--group=0', '--numeric-owner', '--sort=name', '-C', path.join(work, 'bundle'), name]);
+    if (!privateKey) {
+      const manifestSha256 = createHash('sha256').update(readFileSync(path.join(top, 'release/manifest.json'))).digest('hex');
+      return { artifact, name: `${name}.tar`, channel, version, arch, commit, buildNumber: meta.buildNumber, appImage: meta.name, manifestSha256, trust: 'unsigned' };
+    }
     const sha256 = createHash('sha256').update(readFileSync(artifact)).digest('hex');
     const manifestSha256 = createHash('sha256').update(readFileSync(path.join(top, 'release/manifest.json'))).digest('hex');
     writeFileSync(`${artifact}.sha256`, `${sha256}  ${name}.tar\n`);
@@ -114,12 +119,17 @@ export function buildBundle({ unpacked, provenance, appimageJson, out, privateKe
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     const args = Object.fromEntries(process.argv.slice(2).reduce((pairs, value, i, all) => (i % 2 ? pairs : [...pairs, [value.replace(/^--/, ''), all[i + 1]]]), []));
-    for (const key of ['unpacked', 'provenance', 'appimage-json', 'out', 'evaluation-key']) {
-      if (!args[key]) throw new Error('Usage: package-linux-installer.mjs --unpacked DIR --provenance BIN --appimage-json FILE --out DIR --evaluation-key PEM');
-    }
-    const key = realpathSync(args['evaluation-key']);
-    if (lstatSync(key).mode & 0o077) throw new Error('Evaluation key must be readable only by its owner');
-    const result = buildBundle({ unpacked: args.unpacked, provenance: args.provenance, appimageJson: args['appimage-json'], out: args.out, privateKey: createPrivateKey(readFileSync(key)) });
+    const usage = 'Usage: package-linux-installer.mjs --unpacked DIR --provenance BIN --appimage-json FILE --out DIR (--evaluation-key PEM | --unsigned production)';
+    for (const key of ['unpacked', 'provenance', 'appimage-json', 'out']) if (!args[key]) throw new Error(usage);
+    const common = { unpacked: args.unpacked, provenance: args.provenance, appimageJson: args['appimage-json'], out: args.out };
+    let result;
+    if (args.unsigned === 'production' && !args['evaluation-key']) {
+      result = buildBundle({ ...common, privateKey: null, evaluation: false });
+    } else if (args['evaluation-key'] && !args.unsigned) {
+      const key = realpathSync(args['evaluation-key']);
+      if (lstatSync(key).mode & 0o077) throw new Error('Evaluation key must be readable only by its owner');
+      result = buildBundle({ ...common, privateKey: createPrivateKey(readFileSync(key)) });
+    } else throw new Error(usage);
     console.log(`Built ${result.artifact} (${result.trust}, manifest ${result.manifestSha256.slice(0, 16)})`);
   } catch (error) { console.error(`package-linux-installer: ${error.message}`); process.exitCode = 1; }
 }

@@ -69,7 +69,7 @@ try {
     let tree;
     try {
       const output = execFileSync('sudo', [verifier, 'stage-linux-release', `${staging}/release.manifest.json`, `${staging}/release.sig`, `${staging}/release.tar`], { encoding: 'utf8' });
-      assert(output.startsWith(`Staged verified evaluation payload: ${channel.LINUX_TREE}/staging-`));
+      assert(output.startsWith(`Staged verified payload: ${channel.LINUX_TREE}/staging-`));
       tree = output.trim().split(': ')[1];
       assert.equal(readFileSync(path.join(tree, 'resources/app.asar'), 'utf8'), 'signed ASAR fixture');
       assert.equal(existsSync(path.join(channel.LINUX_ROOT, 'active-install.json')), false);
@@ -93,10 +93,11 @@ try {
   verified(verifyArgs(otherPrefix));
   rejectsChannel(args);
   checkLegacy(other);
-  // The ordinary verifier must remain disabled even with an evaluation key in
-  // its runtime environment. Build without the evaluation feature.
+  // The ordinary verifier never trusts an evaluation key, even one in its
+  // runtime environment. Build without the evaluation feature: it either has
+  // no publisher key for this channel or trusts only the committed ones.
   compile(channel.name, false);
   const disabled = spawnSync(verifier, args, { env, encoding: 'utf8' });
-  assert.equal(disabled.status, 1); assert.match(disabled.stderr, /trust is not provisioned/);
+  assert.equal(disabled.status, 1); assert.match(disabled.stderr, /trust is not provisioned|Invalid release signature/);
   console.log('Native signer/verifier interop, legacy Stable, cross-channel rejection, tamper and unprovisioned trust checks passed.');
 } finally { rmSync(root, { recursive: true, force: true }); }

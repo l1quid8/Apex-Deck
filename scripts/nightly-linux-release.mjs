@@ -5,7 +5,8 @@
 //     [--force] [--date YYYYMMDD] [--workflow daemon.yml] [--state-file PATH]
 //     [--github-output PATH]
 //   node scripts/nightly-linux-release.mjs assemble --out DIR --date YYYYMMDD
-//     --commit FULL_SHA --build-number N --build ARCH=DIR [--build ARCH=DIR] [--notes TEXT]
+//     --commit FULL_SHA --build-number N --build ARCH=DIR [--build ARCH=DIR]
+//     [--installer ARCH=DIR --installer ARCH=DIR] [--notes TEXT]
 //   node scripts/nightly-linux-release.mjs publish --assets-dir DIR [--repo OWNER/REPO]
 //     [--current-feed PATH] [--dry-run] [--force]
 //
@@ -48,6 +49,13 @@ export function appImageName(tag, arch) {
   if (!date) throw new Error(`Invalid Nightly tag: ${tag}`);
   return `Apex-Deck-Nightly_${date}_${sha7}_${arch}.AppImage`;
 }
+/** The protected installer bundle published beside each AppImage. */
+export const installerName = (tag, arch) => appImageName(tag, arch).replace(/\.AppImage$/, '.linux-installer.tar');
+/** The installer bundle's own arch names, from the AppImage metadata. */
+const INSTALLER_ARCH = { x86_64: 'x64', arm64: 'arm64' };
+const PUBLISHER_KEYS = path.join(path.dirname(fileURLToPath(import.meta.url)), '../crates/apex-provenance/linux-publisher-keys.json');
+const SPKI_ED25519 = Buffer.from('302a300506032b6570032100', 'hex');
+
 /** The Linux-only release that holds this Nightly's Linux assets. */
 export function linuxAssetTag(tag) {
   const [, date, sha7] = TAG_RE.exec(tag ?? '') ?? [];
@@ -104,6 +112,8 @@ export function parseLinuxFeed(value) {
     notes: value.notes ?? '',
     daemons: assetList(value.daemons, 'daemon', daemonName),
     appImages: assetList(value.appImages, 'appImage', (arch) => appImageName(value.tag, arch)),
+    // Optional: builds before the protected installer was published have none.
+    ...(value.installers === undefined ? {} : { installers: assetList(value.installers, 'installer', (arch) => installerName(value.tag, arch)) }),
   };
 }
 
@@ -232,8 +242,57 @@ export function inspectBuild(dir, { arch, version, commit, buildNumber, tag }) {
   };
 }
 
+/** The Nightly publisher keys committed for the broker, as public key objects. */
+export function nightlyPublisherKeys(file = PUBLISHER_KEYS) {
+  const keys = JSON.parse(fs.readFileSync(file, 'utf8')).nightly;
+  if (!Array.isArray(keys)) throw new Error('linux-publisher-keys.json has no nightly key list.');
+  return keys.map((raw) => crypto.createPublicKey({ key: Buffer.concat([SPKI_ED25519, Buffer.from(raw, 'base64')]), type: 'spki', format: 'der' }));
+}
+
+function tarMember(archive, member) {
+  const result = spawnSync('tar', ['--extract', '--to-stdout', '--file', archive, member], { env: { PATH: '/usr/bin:/bin', LC_ALL: 'C' }, maxBuffer: 8 * 1024 ** 2 });
+  if (result.error) throw new Error(`cannot run tar to read ${member}: ${result.error.message}`);
+  if (result.status !== 0) throw new Error(`cannot read ${member}: ${String(result.stderr).trim()}`);
+  return result.stdout;
+}
+
+/**
+ * Check one sealed installer folder (from seal-linux-installer.mjs): the tar,
+ * its .sha256 and .json, and that its manifest is signed by a committed Nightly
+ * publisher key for this exact build, so a wrong key or build never goes live.
+ */
+export function inspectInstaller(dir, { arch, version, commit, buildNumber, tag, keys = nightlyPublisherKeys() }) {
+  const name = installerName(tag, arch);
+  const archive = path.join(dir, name);
+  const errors = [regularFile(archive, ASSET_LIMIT), ...[`${archive}.sha256`, `${archive}.json`].map((file) => regularFile(file, SIDECAR_LIMIT))].filter(Boolean);
+  if (errors.length) return { errors };
+  const sha256 = sha256File(archive);
+  const size = fs.statSync(archive).size;
+  const [sidecarHash, sidecarName] = fs.readFileSync(`${archive}.sha256`, 'utf8').trim().split(/\s+/);
+  if (sidecarHash !== sha256 || sidecarName !== name) errors.push(`${name}.sha256 does not match ${name}`);
+  let metadata = null;
+  try { metadata = JSON.parse(fs.readFileSync(`${archive}.json`, 'utf8')); } catch (error) { errors.push(`${name}.json is not JSON: ${error.message}`); }
+  if (metadata) {
+    const expected = { name, channel: 'nightly', version, commit, buildNumber, arch: INSTALLER_ARCH[arch], appImage: appImageName(tag, arch), size, sha256, trust: 'production' };
+    const wrong = Object.keys(expected).filter((key) => metadata[key] !== expected[key]);
+    if (wrong.length) errors.push(`${name}.json does not match this Linux Nightly build: ${wrong.join(', ')}`);
+  }
+  try {
+    const top = name.replace(/\.tar$/, '');
+    const manifestBytes = tarMember(archive, `${top}/release/manifest.json`);
+    const signature = tarMember(archive, `${top}/release/manifest.sig`);
+    if (!keys.length) errors.push('no Nightly publisher key is committed in linux-publisher-keys.json');
+    else if (!keys.some((key) => crypto.verify(null, manifestBytes, key, signature))) errors.push(`${name} is not signed by a committed Nightly publisher key`);
+    const manifest = JSON.parse(manifestBytes.toString('utf8'));
+    const want = { channel: 'nightly', version, commit, buildNumber, arch: INSTALLER_ARCH[arch], protocol: 1, evaluation: false };
+    const wrong = Object.keys(want).filter((key) => manifest[key] !== want[key]);
+    if (wrong.length) errors.push(`${name} manifest does not match this Linux Nightly build: ${wrong.join(', ')}`);
+  } catch (error) { errors.push(`${name}: ${error.message}`); }
+  return { errors, installer: { arch, name, size, sha256 }, file: archive };
+}
+
 /** Copy each architecture's build into one folder and write the Linux feed beside it. */
-export function assembleLinuxRelease({ out, date, commit, buildNumber, version, notes = '', builds }) {
+export function assembleLinuxRelease({ out, date, commit, buildNumber, version, notes = '', builds, installers = null, keys }) {
   const tag = formatNightlyTag(date, commit);
   if (!Number.isSafeInteger(buildNumber) || buildNumber <= 0) throw new Error('buildNumber must be a positive integer.');
   const archList = Object.keys(builds).sort();
@@ -252,10 +311,22 @@ export function assembleLinuxRelease({ out, date, commit, buildNumber, version, 
     daemons.push(result.daemon);
     appImages.push(result.appImage);
   }
+  let installerEntries;
+  if (installers) {
+    if (Object.keys(installers).sort().join() !== [...ARCHES].sort().join()) throw new Error(`assemble needs one --installer for each of ${ARCHES.join(', ')}.`);
+    installerEntries = [];
+    for (const arch of ARCHES) {
+      const result = inspectInstaller(installers[arch], { arch, version, commit, buildNumber, tag, ...(keys ? { keys } : {}) });
+      if (result.errors.length) { errors.push(...result.errors.map((error) => `${arch}: ${error}`)); continue; }
+      for (const suffix of ['', '.sha256', '.json']) fs.copyFileSync(`${result.file}${suffix}`, path.join(out, `${result.installer.name}${suffix}`));
+      installerEntries.push(result.installer);
+    }
+  }
   if (errors.length) throw new Error(`Linux Nightly build check failed: ${errors.join('; ')}`);
   const feed = parseLinuxFeed({
     schemaVersion: 1, channel: 'nightly', platform: 'linux', version, buildNumber, commit, tag,
     assetTag: linuxAssetTag(tag), notes: notes || `Linux Nightly build ${buildNumber} (${tag}).`, daemons, appImages,
+    ...(installerEntries ? { installers: installerEntries } : {}),
   });
   fs.writeFileSync(path.join(out, LINUX_FEED_NAME), `${JSON.stringify(feed, null, 2)}\n`);
   return feed;
@@ -263,8 +334,9 @@ export function assembleLinuxRelease({ out, date, commit, buildNumber, version, 
 
 /** Every file Linux uploads to the immutable release, with the size and hash it must have. */
 export function releaseFiles(feed, dir) {
-  const listed = [...feed.daemons, ...feed.appImages].map(({ name, size, sha256 }) => ({ name, size, sha256 }));
-  const sidecars = feed.appImages.flatMap(({ name }) => [`${name}.sha256`, `${name}.json`]);
+  const installers = feed.installers ?? [];
+  const listed = [...feed.daemons, ...feed.appImages, ...installers].map(({ name, size, sha256 }) => ({ name, size, sha256 }));
+  const sidecars = [...feed.appImages, ...installers].flatMap(({ name }) => [`${name}.sha256`, `${name}.json`]);
   const extra = [...sidecars, LINUX_FEED_NAME].map((name) => {
     const filePath = path.join(dir, name);
     const problem = regularFile(filePath, SIDECAR_LIMIT);
@@ -517,10 +589,16 @@ function main(argv) {
       if (at <= 0) throw new Error(`--build takes ARCH=DIR, not ${value}`);
       return [value.slice(0, at), path.resolve(value.slice(at + 1))];
     }));
+    const installerFlags = flags(rest, '--installer');
+    const installers = installerFlags.length ? Object.fromEntries(installerFlags.map((value) => {
+      const at = value.indexOf('=');
+      if (at <= 0) throw new Error(`--installer takes ARCH=DIR, not ${value}`);
+      return [value.slice(0, at), path.resolve(value.slice(at + 1))];
+    })) : null;
     const { version } = JSON.parse(fs.readFileSync('package.json', 'utf8'));
     const feed = assembleLinuxRelease({
       out: path.resolve(flag(rest, '--out')), date: flag(rest, '--date'), commit: flag(rest, '--commit'),
-      buildNumber: Number(flag(rest, '--build-number')), version, notes: flag(rest, '--notes'), builds,
+      buildNumber: Number(flag(rest, '--build-number')), version, notes: flag(rest, '--notes'), builds, installers,
     });
     console.log(JSON.stringify(feed, null, 2));
     return;

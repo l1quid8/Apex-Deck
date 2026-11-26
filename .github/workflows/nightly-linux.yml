@@ -6,7 +6,14 @@
 #      green (macOS and Windows jobs are ignored); skip when the Linux feed
 #      already has that commit. buildNumber is the Linux feed's + 1.
 #   2. build: x86_64 and arm64 Nightly AppImages, each with the daemon built
-#      into it (same binary the VPS and phone installers download).
+#      into it (same binary the VPS and phone installers download), and an
+#      unsigned protected installer bundle with the production broker.
+#   2a. sign: in the `linux-nightly-signing` environment (main only), with no
+#      npm or cargo code in the job, seal each bundle with the Linux Nightly
+#      publisher key (scripts/seal-linux-installer.mjs). It signs only a
+#      manifest that matches this plan's commit, build number and payload.
+#   2b. verify: on each architecture, the bundle's own production broker
+#      verifies the sealed release, as a first install does.
 #   3. publish: verify every file locally, upload to the Linux-only
 #      nightly-linux-YYYYMMDD-<sha7> prerelease, download everything back and
 #      verify again, publish it, make sure the shared nightly-YYYYMMDD-<sha7>
@@ -99,9 +106,26 @@ jobs:
         with:
           key: nightly
       - run: npm ci
-      - run: node --test tests/package-linux.test.mjs tests/nightly-linux-release.test.mjs
+      - run: node --test tests/package-linux.test.mjs tests/nightly-linux-release.test.mjs tests/package-linux-installer.test.mjs tests/seal-linux-installer.test.mjs
       - name: Build the Nightly AppImage and its daemon
         run: npm run desktop:linux
+      - name: Build the production broker and the unsigned protected installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release --locked -p apex-provenance
+          strip target/release/apex-provenance
+          unpacked=$(ls -d release/nightly/linux*-unpacked)
+          node scripts/package-linux-installer.mjs --unpacked "$unpacked" \
+            --provenance target/release/apex-provenance \
+            --appimage-json "$(ls release/nightly/*.AppImage.json)" \
+            --out release/installer-unsigned --unsigned production
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nightly-linux-installer-unsigned-${{ matrix.arch }}
+          path: release/installer-unsigned/*.unsigned.tar
+          if-no-files-found: error
+          retention-days: 3
       - name: Check the AppImage and keep the daemon beside it
         shell: bash
         run: |
@@ -121,8 +145,115 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  publish:
+  sign:
     needs: [plan, build]
+    if: needs.plan.outputs.should_build == 'true'
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: x86_64
+            installer_arch: x64
+          - arch: arm64
+            installer_arch: arm64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # The key lives only here: this job runs no npm or cargo code, takes the
+    # seal script and the committed public keys from the workflow's own commit,
+    # and takes the build's identity from the plan, never from the artifact.
+    environment: linux-nightly-signing
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - name: The planned commit is on this workflow's history
+        env:
+          COMMIT: ${{ needs.plan.outputs.commit }}
+        run: git merge-base --is-ancestor "$COMMIT" HEAD
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: nightly-linux-installer-unsigned-${{ matrix.arch }}
+          path: unsigned
+      - name: Seal with the Linux Nightly publisher key
+        shell: bash
+        env:
+          SIGNING_KEY: ${{ secrets.LINUX_NIGHTLY_SIGNING_KEY }}
+          COMMIT: ${{ needs.plan.outputs.commit }}
+          DATE: ${{ needs.plan.outputs.date }}
+          BUILD_NUMBER: ${{ needs.plan.outputs.build_number }}
+          ARCH: ${{ matrix.arch }}
+          INSTALLER_ARCH: ${{ matrix.installer_arch }}
+        run: |
+          set -euo pipefail
+          [ -n "$SIGNING_KEY" ] || { echo "LINUX_NIGHTLY_SIGNING_KEY is not set in the linux-nightly-signing environment" >&2; exit 1; }
+          key="$RUNNER_TEMP/linux-nightly-signing.pem"
+          trap 'rm -f "$key"' EXIT
+          (umask 077 && printf '%s\n' "$SIGNING_KEY" >"$key")
+          unset SIGNING_KEY
+          version=$(git show "$COMMIT:package.json" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).version))')
+          appimage="Apex-Deck-Nightly_${DATE}_${COMMIT:0:7}_${ARCH}.AppImage"
+          # Check against the planned commit's data, the files its broker and
+          # installer were built from; the seal code itself comes from this ref.
+          data="$RUNNER_TEMP/planned"
+          mkdir -p "$data"
+          git archive "$COMMIT" desktop/channels.json scripts/linux-installer crates/apex-provenance/linux-publisher-keys.json | tar -x -C "$data"
+          env -i PATH="$PATH" HOME="$HOME" node scripts/seal-linux-installer.mjs --data-root "$data" \
+            --unsigned "unsigned/${appimage%.AppImage}.linux-installer.unsigned.tar" --key "$key" \
+            --channel nightly --version "$version" --commit "$COMMIT" --build-number "$BUILD_NUMBER" \
+            --arch "$INSTALLER_ARCH" --appimage "$appimage" --date "$DATE" --out sealed
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nightly-linux-installer-${{ matrix.arch }}
+          path: |
+            sealed/*.linux-installer.tar
+            sealed/*.linux-installer.tar.sha256
+            sealed/*.linux-installer.tar.json
+          if-no-files-found: error
+          retention-days: 14
+
+  verify:
+    needs: [plan, sign]
+    if: needs.plan.outputs.should_build == 'true'
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            arch: x86_64
+          - os: ubuntu-22.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: nightly-linux-installer-${{ matrix.arch }}
+          path: sealed
+      - name: The bundle's own production broker accepts it, as a first install does
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd sealed
+          sha256sum --check ./*.linux-installer.tar.sha256
+          work=$(mktemp -d)
+          tar -xf ./*.linux-installer.tar -C "$work" --no-same-owner
+          release=$(echo "$work"/*/release)
+          tar -xf "$release/payload.tar" -C "$work" --no-same-owner resources/bin/apex-provenance
+          "$work/resources/bin/apex-provenance" verify-linux-release \
+            "$release/manifest.json" "$release/manifest.sig" "$release/payload.tar" | tee "$work/verified"
+          grep -q '^Verified production Linux payload: ' "$work/verified"
+
+  publish:
+    needs: [plan, build, verify]
     if: needs.plan.outputs.should_build == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -143,6 +274,14 @@ jobs:
         with:
           name: nightly-linux-arm64
           path: build/arm64
+      - uses: actions/download-artifact@v4
+        with:
+          name: nightly-linux-installer-x86_64
+          path: installer/x86_64
+      - uses: actions/download-artifact@v4
+        with:
+          name: nightly-linux-installer-arm64
+          path: installer/arm64
       - name: Assemble the Linux Nightly feed
         run: |
           node scripts/nightly-linux-release.mjs assemble \
@@ -151,7 +290,9 @@ jobs:
             --commit "${{ needs.plan.outputs.commit }}" \
             --build-number "${{ needs.plan.outputs.build_number }}" \
             --build x86_64=build/x86_64 \
-            --build arm64=build/arm64
+            --build arm64=build/arm64 \
+            --installer x86_64=installer/x86_64 \
+            --installer arm64=installer/arm64
       - name: Verify, publish the immutable assets, then advance the Linux feed
         env:
           GH_TOKEN: ${{ github.token }}

@@ -16,6 +16,21 @@ fn main() {
     ));
     let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
     std::fs::write(out.join("channel.rs"), source).unwrap();
+    // The production Linux trust roots are reviewed source, never build input.
+    println!("cargo:rerun-if-changed=linux-publisher-keys.json");
+    let keys: serde_json::Value = serde_json::from_str(include_str!("linux-publisher-keys.json")).unwrap();
+    let keys: Vec<&str> = keys[channel]
+        .as_array()
+        .expect("linux-publisher-keys.json needs a list per channel")
+        .iter()
+        .map(|key| key.as_str().expect("publisher keys are strings"))
+        .collect();
+    for key in &keys {
+        // 32 bytes in base64: 43 data characters then exactly one '='.
+        let (data, pad) = key.split_at(key.len().min(43));
+        assert!(data.len() == 43 && pad == "=" && data.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/'), "Invalid Linux publisher key encoding: {key}");
+    }
+    println!("cargo:rustc-env=APEX_LINUX_PUBLISHER_TRUST_ROOTS={}", keys.join(","));
     println!("cargo:rerun-if-env-changed=APEX_LINUX_EVALUATION_PUBLIC_KEY");
     if std::env::var_os("CARGO_FEATURE_LINUX_EVALUATION_VERIFIER").is_some() {
         let key = std::env::var("APEX_LINUX_EVALUATION_PUBLIC_KEY")
