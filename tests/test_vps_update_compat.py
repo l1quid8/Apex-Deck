@@ -54,12 +54,12 @@ class SourceCompatibilityTests(unittest.TestCase):
             self.compat.prepare_source(self.source)
         self.assertEqual(self.command.read_bytes(), modified)
 
-    def test_native_previous_device_route_remains_read_only(self):
+    def test_native_retired_full_access_route_remains_read_only(self):
         self.stage_native()
         current = self.command.read_text()
         previous = current.replace(
-            "Command::PersonalBrowserSession {} | Command::AgentFullAccess { .. }",
-            "Command::PersonalBrowserSession {}", 1
+            "Command::PersonalBrowserSession {}",
+            "Command::PersonalBrowserSession {} | Command::AgentFullAccess { .. }", 1
         )
         self.assertNotEqual(previous, current)
         self.command.write_text(previous)
@@ -71,8 +71,8 @@ class SourceCompatibilityTests(unittest.TestCase):
         current = self.command.read_text()
         mutations = {
             "broader paired bypass": (
-                "Command::PersonalBrowserSession {} | Command::AgentFullAccess { .. }",
-                "Command::PersonalBrowserSession {} | Command::AgentFullAccess { .. } | Command::SettingsSave { .. }",
+                "if matches!(command, Command::PersonalBrowserSession {}) {",
+                "if matches!(command, Command::PersonalBrowserSession {} | Command::SettingsSave { .. }) {",
             ),
             "missing confined authorization": (
                 "        check()?;\n        match command {",

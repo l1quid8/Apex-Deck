@@ -188,22 +188,3 @@ fn computer_setup_and_action_labels_stay_closed_to_phones() {
         assert!(err.contains("Command cannot acquire phone submission authority"), "{name}: {err}");
     }
 }
-
-#[test]
-fn agent_full_access_claims_bind_grant_and_revoke_to_live_paired_authority() {
-    for mutation in [json!({"confirm":true}), json!({"revoke":true})] {
-        let mut journal = Journal::new();
-        let mut args = mutation;
-        args["agent"] = json!("agent-0123456789abcdef0123456789abcdef");
-        let intent = json!({"cmd":"agent_full_access", "args":args});
-        grant(&mut journal, true);
-        assert!(claim(&mut journal, 1, intent.clone(), true, false).is_err());
-        grant(&mut journal, false);
-        assert!(claim(&mut journal, 1, intent.clone(), false, false).is_err());
-        let accepted = claim(&mut journal, 1, intent.clone(), true, false).unwrap();
-        assert_eq!(accepted["receipt"]["command"]["cmd"], intent["cmd"]);
-        assert_eq!(accepted["receipt"]["command"]["args"], intent["args"]);
-        assert!(accepted["receipt"]["command"]["provenanceRequestId"].as_str().unwrap().starts_with("phone:"));
-        assert!(claim(&mut journal, 1, intent, true, false).is_err());
-    }
-}

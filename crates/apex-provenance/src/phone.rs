@@ -91,7 +91,7 @@ impl Journal {
         match name {
             "room_post" | "room_post_to" | "room_turn" | "room_decide" | "room_answer"
             | "room_runner_start" | "room_runner_action" | "room_set_plan"
-            | "room_mount" | "agent_full_access"
+            | "room_mount"
             | "room_update_participant"
             | "room_add_participant"
             | "room_remove_participant"

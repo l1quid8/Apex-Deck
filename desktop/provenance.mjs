@@ -14,7 +14,7 @@ export function authorityPaths(platform=process.platform){
 }
 export const {root:ROOT,socket:SOCKET}=authorityPaths();
 const LIMIT=1024*1024;
-export const protectedCommands=new Set(['agent_full_access','agent_profile_save','provider_setup_begin','backend_stop','computer_set_enabled','computer_set_app_prompts','computer_set_action_labels','computer_setup','assistant_message','assistant_task_action','personal_send','personal_decide_always','personal_decide','room_post','room_post_to','room_turn','room_decide','room_answer','personal_create','personal_configure','personal_workspace_configure','personal_handoff_select','personal_handoff_control','personal_project_delegate','personal_project_delegate_ui','personal_project_propose_ui','personal_avatar_generate','personal_avatar_cancel','personal_permission_set','personal_rule_add','personal_rule_remove','personal_machine_link','personal_machine_unlink','personal_machine_claim','personal_machine_allow','personal_pause','personal_cancel','personal_task_lifecycle','project_task_lifecycle','personal_todo','personal_archive','personal_reply_cancel','personal_schedule_cancel','personal_browser_session','room_set_trashed','room_create','room_import','room_fork','chat_promote','room_update_participant','room_add_participant','room_remove_participant','room_set_options','room_forget_allowed','room_set_plan','room_thread_git_action','room_runner_start','room_runner_action','room_mount','personal_memory_add','personal_memory_correct','personal_memory_forget','project_memory_save','project_memory_forget','project_memory_stage','project_memory_promote','legacy_import_apply','devices_add','pair_approve','search_open']);
+export const protectedCommands=new Set(['agent_profile_save','provider_setup_begin','backend_stop','computer_set_enabled','computer_set_app_prompts','computer_set_action_labels','computer_setup','assistant_message','assistant_task_action','personal_send','personal_decide_always','personal_decide','room_post','room_post_to','room_turn','room_decide','room_answer','personal_create','personal_configure','personal_workspace_configure','personal_handoff_select','personal_handoff_control','personal_project_delegate','personal_project_delegate_ui','personal_project_propose_ui','personal_avatar_generate','personal_avatar_cancel','personal_permission_set','personal_rule_add','personal_rule_remove','personal_machine_link','personal_machine_unlink','personal_machine_claim','personal_machine_allow','personal_pause','personal_cancel','personal_task_lifecycle','project_task_lifecycle','personal_todo','personal_archive','personal_reply_cancel','personal_schedule_cancel','personal_browser_session','room_set_trashed','room_create','room_import','room_fork','chat_promote','room_update_participant','room_add_participant','room_remove_participant','room_set_options','room_forget_allowed','room_set_plan','room_thread_git_action','room_runner_start','room_runner_action','room_mount','personal_memory_add','personal_memory_correct','personal_memory_forget','project_memory_save','project_memory_forget','project_memory_stage','project_memory_promote','legacy_import_apply','devices_add','pair_approve','search_open']);
 
 // Open on the Mac. On Linux the engine refuses them from the local socket
 // (they can raise access), so the broker-launched window proves them with a
@@ -24,12 +24,11 @@ export const linuxAttestedCommands=new Set(['session_save','settings_save','fold
 // A remote host enforces its own grant boundary. Linux accepts its existing
 // local/SSH administration; a remote Mac still rejects unsigned grant changes.
 // Broker failure on this Mac never changes whether attestation is required.
-export function needsAttestation(cmd, remote = false, args) {
-  if (cmd === 'agent_full_access' && args && !args.confirm && !args.revoke) return false;
+export function needsAttestation(cmd, remote = false) {
   if (typeof cmd !== 'string') return false;
   // search_open: this Mac's receipt means nothing to another machine, which
   // checks the connection itself (a paired device, or it asks to be paired).
-  if (remote && (cmd.startsWith('room_') || ['devices_add', 'pair_approve', 'personal_browser_session', 'search_open', 'agent_full_access'].includes(cmd))) return false;
+  if (remote && (cmd.startsWith('room_') || ['devices_add', 'pair_approve', 'personal_browser_session', 'search_open'].includes(cmd))) return false;
   return protectedCommands.has(cmd);
 }
 
@@ -155,7 +154,6 @@ export function windowsIdentity(dataDir) {
   }));
 }
 export async function attestFrame(frame,{dataDir,uid=process.getuid?.(),publicKey:rawKey,issue:send=issue,platform=process.platform,identity=windowsIdentity}={}){
-  if(frame.cmd==='agent_full_access' && !frame.args?.confirm && !frame.args?.revoke)return frame;
   if(!protectedCommands.has(frame.cmd) && !(platform==='linux' && linuxAttestedCommands.has(frame.cmd)))return frame;
   let linuxScope;
   if(platform==='linux') {

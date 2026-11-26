@@ -382,7 +382,7 @@ ipcMain.on('daemon:send', async (event, hostId, gen, line) => {
   // Remote coding rooms and phone-grant management use authenticated SSH;
   // the destination host enforces its own grant boundary. Remote assistant
   // authority is unavailable until its own broker is deployed.
-  if (needsAttestation(frame.cmd, hostId !== LOCAL, frame.args)) {
+  if (needsAttestation(frame.cmd, hostId !== LOCAL)) {
     try {
       if (hostId === LOCAL && plan.protectedSubmissionError) throw new Error(plan.protectedSubmissionError);
       if (hostId !== LOCAL) throw new Error('Protected assistant submissions currently require the installed UI on the same Mac as the project host.');

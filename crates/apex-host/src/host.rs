@@ -2210,55 +2210,6 @@ impl Host {
         Ok(())
     }
 
-    /// Name-derived legacy IDs must already belong to an agent on this host.
-    /// New agents may confirm before creation only with a non-reused opaque ID.
-    pub(crate) fn validate_agent_full_access_identity(&self, agent: &str) -> Result<(), String> {
-        let opaque = agent.strip_prefix("agent-").is_some_and(|id| {
-            let compact: String = id.chars().filter(|c| *c != '-').collect();
-            let shape = id.len() == 32 || (id.len() == 36 && [8, 13, 18, 23].iter().all(|&i| id.as_bytes()[i] == b'-'));
-            shape && compact.len() == 32 && compact.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
-        });
-        if opaque { return Ok(()); }
-        if self.session()?.and_then(|session| session.profiles)
-            .is_some_and(|profiles| profiles.iter().any(|profile| profile["id"].as_str() == Some(agent))) { return Ok(()); }
-        for id in self.store.room_ids()? {
-            if self.store.room(&id)?.is_some_and(|saved| saved.snapshot.participants.iter().any(|p| p.id.as_str() == agent)) { return Ok(()); }
-        }
-        Err("This agent identity is not saved on this machine. Create the agent before confirming Full access.".into())
-    }
-
-    /// Withdraw the host-wide bypass first, then stop every currently Full copy.
-    /// A failed stop never restores approval or reports a successful withdrawal.
-    pub(crate) async fn revoke_agent_full_access(&self, agent: &str) -> Result<(), String> {
-        apex_core::agent_full_access::revoke(self.data_dir(), agent)?;
-        let handles: Vec<_> = self.rooms.lock().unwrap().iter()
-            .filter(|(_, handle)| handle.checkpoint.lock().unwrap().snapshot.participants.iter()
-                .any(|p| p.id.as_str() == agent && p.access == Access::Full))
-            .map(|(id, handle)| (id.clone(), handle.clone())).collect();
-        let participant_id = ParticipantId::new(agent);
-        // Signal every affected turn before waiting on any transcript mutex.
-        // Compaction in an unrelated room may hold that mutex across a provider call.
-        for (id, handle) in &handles {
-            handle.approvals.reject_for(&participant_id);
-            self.room_stop(id.clone(), Some(participant_id.clone()));
-        }
-        let results = futures::future::join_all(handles.into_iter().map(|(id, handle)| {
-            let participant_id = participant_id.clone();
-            async move {
-                let room = handle.room.lock().await;
-                let Some(participant) = room.participant(&participant_id)
-                    .filter(|participant| participant.config().access == Access::Full) else { return None; };
-                let failure = participant.cancel_active_turn().await.err().map(|why| format!("{id}: {why}"));
-                self.tool_servers.lock().unwrap().remove(&format!("{id}:{agent}"));
-                failure
-            }
-        })).await;
-        let failures: Vec<_> = results.into_iter().flatten().collect();
-        if failures.is_empty() { Ok(()) } else {
-            Err(format!("Full access confirmation was revoked, but some running processes could not be stopped: {}", failures.join("; ")))
-        }
-    }
-
     pub fn room_stop(&self, id: String, participant: Option<ParticipantId>) {
         self.computer.revoke(Some(&id),participant.as_ref().map(ParticipantId::as_str));
         // Runner: Stop during countdown also pauses
@@ -2610,7 +2561,6 @@ impl Host {
                     if named != actual {
                         return Err("The Full access folder does not match the thread's folder.".into());
                     }
-                    apex_core::agent_full_access::check(&self.paths.data, &actual, next.id.as_str())?;
                 }
             }
         }
@@ -4065,18 +4015,6 @@ impl Host {
     }
 
     fn room_mount_inner(&self, id: String, cwd: String) -> Result<serde_json::Value, String> {
-        // Full gate for mount: only Full bots are gated per Task 6
-        let target_for_gate = PathBuf::from(&cwd);
-        let participants = {
-            if let Some(handle) = self.rooms.lock().unwrap().get(&id) {
-                handle.checkpoint.lock().unwrap().snapshot.participants.clone()
-            } else {
-                self.store.room(&id)?.map(|s| s.snapshot.participants).unwrap_or_default()
-            }
-        };
-        for participant in participants.iter().filter(|p| p.access == apex_core::Access::Full) {
-            apex_core::agent_full_access::check(&self.paths.data, &target_for_gate, participant.id.as_str())?;
-        }
         let _lifecycle = self.room_lifecycle.lock().unwrap();
         if self.assistant_tasks.execution(&id).map_err(|e| e.to_string())?.is_some() {
             return Err("An assistant worker chat cannot mount another worktree.".into());
@@ -5823,6 +5761,41 @@ mod host_tests {
     }
 
     #[test]
+    fn full_setting_needs_no_second_approval_but_preserves_device_binding_and_mount_checks() {
+        let (host, runtime, data) = host("full-setting");
+        let (repo, tree) = mount_repo(&data);
+        let mut config = named_bot("null", "Null");
+        config.access = Access::Ask;
+        host.room_create("r".into(), vec![config.clone()], RoomOptions::default(), Some(repo.to_string_lossy().into())).unwrap();
+        crate::folder_trust::mark_tainted(&data, &repo).unwrap();
+        crate::folder_trust::mark_tainted(&data, &tree).unwrap();
+        let mut full = config.clone(); full.access = Access::Full;
+        let change = |old, folder, check: &(dyn Fn() -> Result<(), String> + Send + Sync)| runtime.block_on(
+            host.room_update_participant_from_device("r".into(), full.clone(), Some(config.clone()), old, folder, check)
+        );
+        let actual = Some(repo.to_string_lossy().into_owned());
+        assert!(change(None, actual.clone(), &|| Ok(())).unwrap_err().contains("old_level"));
+        assert!(change(Some(Access::Read), actual.clone(), &|| Ok(())).unwrap_err().contains("access changed"));
+        assert!(change(Some(Access::Ask), Some(tree.to_string_lossy().into_owned()), &|| Ok(())).unwrap_err().contains("does not match"));
+        assert!(change(Some(Access::Ask), actual.clone(), &|| Err("device revoked".into())).unwrap_err().contains("device revoked"));
+        assert_eq!(change(Some(Access::Ask), actual, &|| Ok(())).unwrap().access, Access::Full);
+        assert!(!data.join("agent-full-access.json").exists());
+        // Automatic Git still needs its own lower-access jail. Full agent access
+        // must not silently turn those unrelated project operations into Full.
+        match host.room_mount("r".into(), tree.to_string_lossy().into()) {
+            Ok(_) => {
+                // Mount retires the live runtime; reopen the persisted thread.
+                host.room_create("r".into(), vec![], RoomOptions::default(), None).unwrap();
+                assert_eq!(host.handle("r").unwrap().context.cwd, Some(tree.clone()));
+                let saved = host.store.room("r").unwrap().unwrap();
+                assert_eq!(saved.snapshot.participants[0].access, Access::Full);
+            }
+            Err(why) => assert!(why.starts_with("needs bubblewrap (admin):") || why.starts_with("Automatic project operation refused:"), "{why}"),
+        }
+        assert!(!crate::folder_trust::is_accepted(&data, &tree));
+    }
+
+    #[test]
     fn room_mount_refuses_busy_foreign_missing_and_subfolders() {
         let (host, runtime, data) = host("mount-guards");
         let (repo, tree) = mount_repo(&data);
@@ -6105,51 +6078,6 @@ mod host_tests {
         assert_eq!(settings.len(), 2, "both clients must hear each saved change");
         assert_eq!(settings[1]["payload"]["event"]["participant"], json);
         drop(events);
-        let _ = std::fs::remove_dir_all(data);
-    }
-
-    #[test]
-    fn agent_full_access_revoke_persists_before_stopping_all_full_copies_and_reports_failure() {
-        struct StopProbe { config: ParticipantConfig, data: PathBuf, stops: Arc<AtomicUsize>, signals: Arc<Mutex<Vec<(Arc<AtomicU64>, u64)>>>, fail: bool }
-        #[async_trait::async_trait]
-        impl apex_core::Participant for StopProbe {
-            fn config(&self) -> &ParticipantConfig { &self.config }
-            async fn respond(&self, _: apex_core::TurnRequest, _: apex_core::DeltaSink<'_>) -> Result<apex_core::Reply, apex_core::ParticipantError> { unreachable!() }
-            async fn cancel_active_turn(&self) -> Result<bool, String> {
-                assert!(!apex_core::agent_full_access::approved(&self.data, self.config.id.as_str()).unwrap(), "withdrawal must be durable before cancellation");
-                assert!(self.signals.lock().unwrap().iter().all(|(revision, before)| revision.load(Ordering::SeqCst) > *before), "signal every target before waiting for any process cancellation");
-                self.stops.fetch_add(1, Ordering::SeqCst);
-                if self.fail { Err("process refused to exit".into()) } else { Ok(true) }
-            }
-        }
-        let (host, runtime, data) = host("agent-full-access-revoke");
-        let stops = Arc::new(AtomicUsize::new(0));
-        let signals = Arc::new(Mutex::new(Vec::new()));
-        for (room_id, access, fail) in [("full-a", Access::Full, true), ("full-b", Access::Full, false), ("restricted", Access::Ask, false)] {
-            let mut config = named_bot("worker", "Worker"); config.access = access;
-            host.room_create(room_id.into(), vec![config.clone()], RoomOptions::default(), None).unwrap();
-            if access == Access::Full {
-                let revision = host.handle(room_id).unwrap().observation_revision.clone();
-                let before = revision.load(Ordering::SeqCst);
-                signals.lock().unwrap().push((revision, before));
-            }
-            let probe = Arc::new(StopProbe { config, data: data.clone(), stops: stops.clone(), signals: signals.clone(), fail });
-            assert!(runtime.block_on(async { host.room(room_id).unwrap().lock().await.replace_participant(probe) }));
-        }
-        apex_core::agent_full_access::approve(&data, "worker").unwrap();
-        let error = runtime.block_on(async {
-            let unrelated = host.room("restricted").unwrap();
-            let _held = unrelated.lock().await;
-            tokio::time::timeout(std::time::Duration::from_secs(2), host.revoke_agent_full_access("worker"))
-                .await.expect("an unrelated transcript lock must never delay withdrawal")
-        }).unwrap_err();
-        assert!(error.contains("was revoked") && error.contains("full-a: process refused to exit"), "{error}");
-        assert_eq!(stops.load(Ordering::SeqCst), 2, "stop every Full copy despite another copy failing; skip restricted copies");
-        assert!(!apex_core::agent_full_access::approved(&data, "worker").unwrap());
-        assert!(host.validate_agent_full_access_identity("worker").is_ok());
-        assert!(host.validate_agent_full_access_identity("future-name").is_err());
-        assert!(host.validate_agent_full_access_identity("agent-01234567-89ab-4def-8123-456789abcdef").is_ok());
-        assert!(host.validate_agent_full_access_identity("agent-0123456789abcdef0123456789abcdef").is_ok());
         let _ = std::fs::remove_dir_all(data);
     }
 

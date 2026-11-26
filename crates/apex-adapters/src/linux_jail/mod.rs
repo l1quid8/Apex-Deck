@@ -331,15 +331,6 @@ pub fn build_spec(
 ) -> Result<JailSpec, JailError> {
     let mounts = paths::Mounts::current()?;
 
-    // Task 8: Full gate and taint record — same file as apex-host/folder_trust.rs
-    // Mark tainted before jail starts, sync to disk for crash safety.
-    // Full launches require agent confirmation or legacy folder acceptance.
-    if matches!(access, apex_core::Access::Full) {
-        if let Err(why) = apex_core::agent_full_access::check(data_dir, cwd, bot) {
-            return Err(JailError::Login(why));
-        }
-    }
-
     let writable = matches!(access, apex_core::Access::Ask | apex_core::Access::Edits);
     // The folders inside the data folder this launch may write: the empty work
     // tree a copy or a task checkout is about to be created in. They have to
