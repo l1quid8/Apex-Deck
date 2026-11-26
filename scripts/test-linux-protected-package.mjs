@@ -69,7 +69,7 @@ try {
     let tree;
     try {
       const output = execFileSync('sudo', [verifier, 'stage-linux-release', `${staging}/release.manifest.json`, `${staging}/release.sig`, `${staging}/release.tar`], { encoding: 'utf8' });
-      assert(output.startsWith(`Staged verified evaluation payload: ${channel.LINUX_TREE}/staging-`));
+      assert(output.startsWith(`Staged verified payload: ${channel.LINUX_TREE}/staging-`));
       tree = output.trim().split(': ')[1];
       assert.equal(readFileSync(path.join(tree, 'resources/app.asar'), 'utf8'), 'signed ASAR fixture');
       assert.equal(existsSync(path.join(channel.LINUX_ROOT, 'active-install.json')), false);
