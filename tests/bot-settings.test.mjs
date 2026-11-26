@@ -19,7 +19,9 @@ test('Model switching and supported speed selections persist when the quick sele
       this.render();
     },render(){root.render(React.createElement(BotSettings,{key:this.key,config:this.config,roomId:'test',anchor:document.getElementById('anchor'),backend,save:async config=>{this.config=config;this.saves++;this.render();},close(){root.render(null);}}));}};
     const models=[{id:'first',label:'First model'},{id:'last',label:'Last model'}];
-    const backend={agentModels:async()=>{if(window.fixture.fail)throw Error('offline');return models;},apiModels:async()=>{if(window.fixture.fail)throw Error('offline');return models;},roomCreate:async()=>({participants:[window.fixture.config]})};
+    window.confirm=()=>true;
+    const approvals=new Set();
+    const backend={supports:capability=>capability==='agent_full_access_v1',call:async(command,args)=>{if(command!=='agent_full_access')throw Error('Unexpected command '+command);if(args.confirm)approvals.add(args.agent);if(args.revoke)approvals.delete(args.agent);return {approved:approvals.has(args.agent)};},agentModels:async()=>{if(window.fixture.fail)throw Error('offline');return models;},apiModels:async()=>{if(window.fixture.fail)throw Error('offline');return models;},roomCreate:async()=>({participants:[window.fixture.config]})};
     window.ready=true;
   </script></body></html>`;
   // Each parallel test file gets its own dependency cache: Vite servers sharing

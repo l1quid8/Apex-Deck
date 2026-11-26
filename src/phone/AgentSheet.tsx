@@ -360,7 +360,7 @@ export function AgentSheet(props: {
       ))}
     </div>
     <p className="ph-sheet-text">{access.find((choice) => choice.id === draft.access)?.title}</p>
-    {props.backend && props.agent && draft.access === "full" && <AgentFullAccessStatus backend={props.backend} config={props.agent} />}
+    {props.backend && props.agent && <AgentFullAccessStatus backend={props.backend} config={props.agent} />}
     <p className="ph-sheet-text ph-quiet">Voice, look and picture settings stay as {props.agent ? "the Mac has them" : "the agent you started from"}.</p>
     {problem && <p className="ph-sheet-text ph-amber">{problem}</p>}
     {props.saveProblem && <p className="ph-sheet-text ph-amber">{props.saveProblem}</p>}

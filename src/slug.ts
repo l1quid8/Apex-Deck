@@ -68,15 +68,13 @@ export function freeId(id: string, taken: readonly string[]): string {
 }
 
 /**
- * The id a bot is saved under, or why its name can't be used. An edited bot
- * keeps its id. A new one gets the id its name gives, or the next free one
- * when a renamed bot still holds that id. In a chat, an agent with another
- * name keeps its id too, so a new bot is never taken for that agent's copy.
+ * Edits and intentional saved-agent copies keep their identity. Every new agent
+ * receives an opaque identity, so recreating a deleted name cannot inherit grants.
  */
 export function botIdentity(bot: Mentionable, options: { editing: string | null; others: readonly Mentionable[]; agents: readonly Mentionable[]; place: "chat" | "agents" }): { id: string } | { error: string } {
-  const mention = mentionFor(bot);
-  const held = [...options.others, ...options.agents.filter((agent) => mentionFor(agent) !== mention)].map((p) => p.id);
-  const id = options.editing ?? freeId(bot.id, held);
-  const clash = mentionClash({ ...bot, id }, options.others);
+  const copy = options.place === "chat" && options.agents.find((agent) => agent.id === bot.id && mentionFor(agent) === mentionFor(bot));
+  const id = options.editing ?? (copy ? copy.id : `agent-${crypto.randomUUID()}`);
+  // A saved agent already present in the chat is still a duplicate addition.
+  const clash = mentionClash({ ...bot, id: options.editing ?? "" }, options.others);
   return clash ? { error: clashMessage(clash, options.place) } : { id };
 }

@@ -2246,6 +2246,7 @@ export type Command = {
   args: {
     agent: string;
     confirm?: boolean;
+    revoke?: boolean;
   };
   cmd: "agent_full_access";
 } | {
@@ -3248,6 +3249,7 @@ export interface Commands {
   agent_full_access: {
     agent: string;
     confirm?: boolean;
+    revoke?: boolean;
   };
   agent_models: {
     tool: AgentTool;

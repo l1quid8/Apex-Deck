@@ -72,7 +72,7 @@ export function BotSettings({ config, roomId, anchor = null, inline = false, bac
     const current = loadCurrentRef.current ? await loadCurrentRef.current() : roomId ? (await backend.roomCreate(roomId, [], { policy: 'mention', max_bot_hops: 0 }, '')).participants.find(p => p.id === value.base.id) : undefined;
     if (!current) throw new Error('This agent is no longer in the thread.');
     const next = applyTurnChange(current, value.change);
-    if (!loadCurrentRef.current && value.change.access === "full") await confirmAgentFullAccess(backend, next);
+    if (!loadCurrentRef.current && value.change.access === "full") await confirmAgentFullAccess(backend, next, undefined, current.access);
     await saveRef.current(next, current);
   }));
   const touched = useRef<Change>({});

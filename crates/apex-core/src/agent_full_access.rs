@@ -1,5 +1,6 @@
 //! Host-local confirmation for an agent to execute code in its existing folder scope.
-//! Kept outside participant configs so copying/importing a config cannot grant it.
+//! Configs cannot carry approvals between hosts; intentional same-ID thread copies
+//! share this host's approval. New agents use non-reused opaque identities.
 use std::{collections::BTreeSet, io::Write, path::Path, sync::{Mutex, atomic::{AtomicU64, Ordering}}};
 use serde::{Deserialize, Serialize};
 
@@ -23,12 +24,22 @@ pub fn approved(data: &Path, agent: &str) -> Result<bool, String> {
 
 /// Called only through the host's authenticated access-raising command.
 pub fn approve(data: &Path, agent: &str) -> Result<(), String> {
+    save(data, agent, true)
+}
+
+/// Remove the approval durably before the host stops affected processes.
+pub fn revoke(data: &Path, agent: &str) -> Result<(), String> {
+    save(data, agent, false)
+}
+
+fn save(data: &Path, agent: &str, approved: bool) -> Result<(), String> {
     if agent.trim().is_empty() || agent.len() > 256 || agent.chars().any(char::is_control) {
         return Err("Invalid agent identity.".into());
     }
     let _guard = WRITES.lock().map_err(|_| "Agent approval storage is unavailable.")?;
     let mut store = load(data)?;
-    store.agents.insert(agent.to_owned());
+    if approved { store.agents.insert(agent.to_owned()); }
+    else { store.agents.remove(agent); }
     std::fs::create_dir_all(data).map_err(|e| e.to_string())?;
     let tmp = data.join(format!("{FILE}.tmp-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
     let mut options = std::fs::OpenOptions::new();
@@ -73,6 +84,10 @@ mod tests {
         assert!(check(&data, &folder, "jigga").is_err());
         assert!(!approved(&data.join("other-host"), "null").unwrap());
         assert!(!crate::folder_trust::is_accepted(&data, &folder));
+        revoke(&data, "null").unwrap();
+        assert!(!approved(&data, "null").unwrap());
+        assert!(check(&data, &folder, "null").is_err());
+        approve(&data, "null").unwrap();
         // Malformed storage fails closed, including for previously approved agents.
         std::fs::write(data.join(FILE), "{").unwrap();
         assert!(check(&data, &folder, "null").is_err());

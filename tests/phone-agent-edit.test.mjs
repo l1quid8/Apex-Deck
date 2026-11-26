@@ -33,10 +33,12 @@ test('a rename keeps the id the agent was saved under, so old @mentions still re
   assert.equal(built.display_name, 'Claude the Reviewer');
 });
 
-test('a new agent takes its name as its id, and a name another agent answers to is refused', () => {
+test('a new agent receives an opaque id, and a name another agent answers to is refused', () => {
   const template = agent();
   const built = agentFromDraft(template, { ...agentTemplateDraft(template), name: 'Scout' }, { editing: null, others: [], appearance: null });
-  assert.equal(built.id, 'scout');
+  assert.match(built.id, /^agent-[0-9a-f-]{36}$/);
+  const recreated = agentFromDraft(template, { ...agentTemplateDraft(template), name: 'Scout' }, { editing: null, others: [], appearance: null });
+  assert.notEqual(recreated.id, built.id);
   assert.equal(built.display_name, 'Scout');
   // The look is the new one the save was given, not the template's: two agents made in a row differ.
   assert.deepEqual(built.appearance, null);
@@ -265,7 +267,7 @@ test('a new agent writes every field it was given, from the bot it started from'
   const next = saveAgentDraft([], { id: null, template, initial: start, draft: { ...start, name: 'Scout', access: 'edits' }, appearance: { seed: 'seed-2', color: '#f28b82' } });
   assert.equal(typeof next, 'object');
   const saved = next[0];
-  assert.equal(saved.id, 'scout');
+  assert.match(saved.id, /^agent-[0-9a-f-]{36}$/);
   assert.equal(saved.access, 'edits');
   assert.equal(saved.persona, 'Writes the code.', 'the brief it started from is kept');
   assert.deepEqual(saved.backend, template.backend, 'and so is the tool it runs');
@@ -276,5 +278,7 @@ test('merging without a starting draft writes everything, which is what a new ag
   const template = agent();
   const built = mergeAgentDraft(template, { ...agentDraft(template), name: 'Scout' }, { editing: null, others: [], appearance: null });
   assert.equal(built.display_name, 'Scout');
-  assert.equal(built.id, 'scout');
+  assert.match(built.id, /^agent-[0-9a-f-]{36}$/);
+  const recreated = agentFromDraft(template, { ...agentTemplateDraft(template), name: 'Scout' }, { editing: null, others: [], appearance: null });
+  assert.notEqual(recreated.id, built.id);
 });

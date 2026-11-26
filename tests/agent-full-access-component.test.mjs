@@ -16,13 +16,13 @@ function mount(props) {
   const useState = initial => { const i = cursor++; if (!(i in state)) state[i] = initial; return [state[i], value => { state[i] = value; }]; };
   const useRef = initial => { const i = cursor++; return state[i] ??= { current: initial }; };
   const useEffect = (effect, next) => { const i = cursor++; if (!deps[i] || next.some((v, j) => deps[i][j] !== v)) { deps[i] = next; effects.push(() => { cleanups[i]?.(); cleanups[i] = effect(); }); } };
-  const bindings = { React, useState, useRef, useEffect, confirmAgentFullAccess: (backend, config) => confirmAgentFullAccess(backend, config, () => true) };
+  const bindings = { window: { confirm: () => true }, React, useState, useRef, useEffect, confirmAgentFullAccess: (backend, config) => confirmAgentFullAccess(backend, config, () => true) };
   const Component = new Function(...Object.keys(bindings), compiled + '\nreturn AgentFullAccessStatus;')(...Object.values(bindings));
   return { props, render() { cursor = 0; const tree = Component(this.props); effects.splice(0).forEach(effect => effect()); return tree; } };
 }
 test('a blocked Full agent can confirm from settings without sending a thread message', async () => {
-  const calls = [];
-  const backend = { supports: () => true, call: async (cmd, args) => { calls.push([cmd, args]); return { approved: !!args.confirm }; } };
+  const calls = []; let approved = false;
+  const backend = { supports: () => true, call: async (cmd, args) => { calls.push([cmd, args]); if (args.confirm) approved = true; if (args.revoke) approved = false; return { approved }; } };
   const config = { id: 'null', display_name: 'Null', access: 'full' };
   const h = mount({ backend, config }); h.render(); await tick();
   const button = find(h.render(), node => node.type === 'button');
@@ -32,6 +32,11 @@ test('a blocked Full agent can confirm from settings without sending a thread me
   assert.ok(calls.every(([cmd]) => cmd === 'agent_full_access'));
   assert.equal(calls.filter(([, args]) => args.confirm).length, 1);
   h.props = { backend, config: { ...config, access: 'ask' } };
+  h.render(); await tick();
+  const revoke = find(h.render(), node => node.type === 'button');
+  assert.equal(text(revoke), 'Revoke Full access approval');
+  await revoke.props.onClick();
+  assert.equal(calls.at(-1)[1].revoke, true);
   assert.equal(h.render(), null);
 });
 test('unsupported service explains why confirmation is unavailable', () => {

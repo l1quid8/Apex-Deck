@@ -787,6 +787,10 @@ pub(crate) mod tests {
     fn agent_full_access_queries_never_grant_authority() {
         let query: Command = serde_json::from_value(serde_json::json!({"cmd":"agent_full_access", "args":{"agent":"null"}})).unwrap();
         assert_eq!(access_effect(&query), AccessEffect::None);
+        let revoke: Command = serde_json::from_value(serde_json::json!({"cmd":"agent_full_access", "args":{"agent":"null", "revoke":true}})).unwrap();
+        assert_eq!(access_effect(&revoke), AccessEffect::None);
+        assert!(revoke.requires_provenance());
+        assert!(!query.requires_provenance());
         let grant: Command = serde_json::from_value(serde_json::json!({"cmd":"agent_full_access", "args":{"agent":"null", "confirm":true}})).unwrap();
         assert_eq!(access_effect(&grant), AccessEffect::Raises);
         assert!(allowed(&grant).is_ok());
