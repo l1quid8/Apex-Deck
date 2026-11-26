@@ -5783,7 +5783,13 @@ mod host_tests {
         // Automatic Git still needs its own lower-access jail. Full agent access
         // must not silently turn those unrelated project operations into Full.
         match host.room_mount("r".into(), tree.to_string_lossy().into()) {
-            Ok(_) => assert_eq!(host.handle("r").unwrap().context.cwd, Some(tree.clone())),
+            Ok(_) => {
+                // Mount retires the live runtime; reopen the persisted thread.
+                host.room_create("r".into(), vec![], RoomOptions::default(), None).unwrap();
+                assert_eq!(host.handle("r").unwrap().context.cwd, Some(tree.clone()));
+                let saved = host.store.room("r").unwrap().unwrap();
+                assert_eq!(saved.snapshot.participants[0].access, Access::Full);
+            }
             Err(why) => assert!(why.starts_with("needs bubblewrap (admin):") || why.starts_with("Automatic project operation refused:"), "{why}"),
         }
         assert!(!crate::folder_trust::is_accepted(&data, &tree));
