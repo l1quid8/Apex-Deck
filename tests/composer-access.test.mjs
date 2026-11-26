@@ -17,14 +17,24 @@ test('composer access switches immediately, persists, and marks a busy change un
     const root=createRoot(document.getElementById('test-root'));
     let bot={id:'bot',display_name:'Bot',persona:'',access:'read',effort:null,backend:{kind:'agent',tool:'claude_code',model:'sonnet'}};
     const state=()=>({recovery_seq:1,snapshot:{participants:[bot],options:{policy:'mention',max_bot_hops:3},transcript:[]},active:['bot'],approvals:[{id:'bot',request:'req-1',action:{kind:'command',title:'Run ls',detail:'ls'}}]});
-    window.fixture={calls:[],misses:0,listeners:[],
+    window.fixture={calls:[],dialogs:[],misses:0,listeners:[],
       mount(style){root.render(React.createElement(ChatPane,{pane:{id:'r1',workspaceId:'w1',kind:'chat',title:'Thread'},cwd:'/tmp/project',agents:[],backend,focused:true,onActivity(){},profiles:[],onProfilesChange(){},disabledProviders:[],chipParts:{tool:true,effort:true,usage:true,style}}));},
       unmount(){root.render(null);},
       emit(event){this.listeners.forEach(fn=>fn('r1',event));},
       count(name){return this.calls.filter(c=>c[0]===name).length;}};
     const log=(name,fn)=>(...args)=>{window.fixture.calls.push([name,...args]);return fn(...args);};
     // The browser preview's service, with the room's lifecycle, reads, decisions and events replaced and logged.
-    const backend={...await getBackend(),
+    const previewBackend=await getBackend();
+    const approvals=new Set();
+    window.confirm=message=>{window.fixture.dialogs.push(message);return true;};
+    const backend={...previewBackend,
+      supports:capability=>capability==='agent_full_access_v1'||previewBackend.supports?.(capability)===true,
+      call:log('call',async(command,args)=>{
+        if(command!=='agent_full_access')return previewBackend.call(command,args);
+        if(args.confirm)approvals.add(args.agent);
+        if(args.revoke)approvals.delete(args.agent);
+        return {approved:approvals.has(args.agent)};
+      }),
       roomCreate:log('roomCreate',async()=>state().snapshot),
       // A room Deck hasn't opened yet reads as the service's own missing-room error.
       roomState:log('roomState',async id=>{if(window.fixture.misses>0){window.fixture.misses--;throw Error('no group chat with id '+id);}return state();}),
@@ -59,7 +69,10 @@ test('composer access switches immediately, persists, and marks a busy change un
         assert.equal(await run(()=>document.querySelector('button.bot-access .quick-cell-label').textContent),'Full','icon steps at once');
         await wait(()=>document.querySelector('.chip-access')?.textContent.includes('Full'));
         await wait(()=>document.querySelector('.chip-access')?.textContent.includes('after this reply'));
-        assert.equal(await run(()=>window.fixture.count('roomUpdateParticipant')),1,'no confirmation step');
+        assert.equal(await run(()=>window.fixture.count('roomUpdateParticipant')),1,'one save after consent');
+        assert.equal(await run(()=>window.fixture.dialogs.length),1,'Full access asks once for consent');
+        assert.match(await run(()=>window.fixture.dialogs[0]),/code written by other agents/);
+        assert.equal(await run(()=>window.fixture.calls.filter(c=>c[0]==='call'&&c[1]==='agent_full_access'&&c[2].confirm).length),1,'one explicit grant');
         assert.equal(await run(()=>window.fixture.calls.find(c=>c[0]==='roomUpdateParticipant')[3].access),'read','save binds the observed old level');
         assert.equal(await run(()=>window.fixture.calls.find(c=>c[0]==='roomUpdateParticipant')[4]),'/tmp/project','save binds the displayed thread folder');
         assert.equal(await run(()=>document.querySelector('.bot-access-note').textContent.includes('after this reply')),true);

@@ -1488,8 +1488,9 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 254);
+        assert_eq!(names.len(), 255);
         for name in [
+            "agent_full_access",
             "session_save_layout",
             "search_open",
             "search",
