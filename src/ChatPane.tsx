@@ -2871,7 +2871,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
     };
     onSendApi(pane.id, api);
     return () => onSendApi(pane.id, null);
-  }, [onSendApi, pane.id, backend, canPickAgent, turnQueue, profileMode, talkOnly, providerCatalog, participants]);
+  }, [onSendApi, pane.id, backend, canPickAgent, turnQueue, profileMode, talkOnly, providerCatalog, participants, queued, lastMessage?.seq, options.policy]);
 
   const send = async (steer = false) => {
     if (admittingOwn.current || (dock?.since && Date.now() - dock.since < 600)) return;
