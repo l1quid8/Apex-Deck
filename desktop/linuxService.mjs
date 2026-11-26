@@ -10,10 +10,13 @@ export async function resolveLinuxLaunch({plan,bundle,identity=linuxIdentity,dat
     // A restarting engine can still be loading its protected documents when
     // the broker first probes it. Yield between read-only discovery attempts
     // so startup can make progress; no submission or launch is replayed.
-    for(let attempt=0;attempt<12;attempt++) {
+    // About a minute: an arm64 engine took 26 s to listen after a restart,
+    // and giving up shows a "requires repair" box for a healthy install.
+    const attempts=120;
+    for(let attempt=0;attempt<attempts;attempt++) {
       try { scope=await identity({dataDir});break; }
       catch(error) {
-        if(attempt===11 || !['Installed daemon readiness probe failed','Installed daemon readiness probe timed out'].includes(error.message))throw error;
+        if(attempt===attempts-1 || !['Installed daemon readiness probe failed','Installed daemon readiness probe timed out'].includes(error.message))throw error;
         await wait(500);
       }
     }
