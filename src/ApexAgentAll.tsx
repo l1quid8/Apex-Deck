@@ -1,3 +1,4 @@
+import { AssistantWorkingTurn } from './phone/AssistantWorkingTurn';
 import { ArrowUp } from './phone/icons';
 import './phone/voice-call.css';
 import { useComposerHistory } from "./useComposerHistory";
@@ -139,6 +140,8 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
   const names = useMemo(() => Object.fromEntries(workspaces.map((workspace) => [workspace.id, workspace.name])), [workspaces]);
   const watched = (embedded ? [] : workspaces).filter((workspace) => monitors.some((monitor) => monitor.workspaceId === workspace.id));
   const assistant = personal?.assistant ?? null;
+  const pendingReplies=(assistant?.events??[]).filter(e=>e.source?.kind==='human'&&['received','processing'].includes(e.state));
+  const pendingReply=pendingReplies.find(e=>e.state==='processing')??pendingReplies[0];
   const personalTag = personal ? `${personal.name} · ${personal.hostName}` : '';
   // Projects plus the personal assistant: a reply goes to whichever is named, or the last one discussed.
   const lanes = [...watched.map((workspace) => ({ id: workspace.id, name: workspace.name })), ...(assistant ? [{ id: PERSONAL, name: personal!.name }] : [])];
@@ -260,7 +263,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
       if (scroller.current) scroller.current.scrollTop = scroller.current.scrollHeight;
       bottom.current?.scrollIntoView?.({ block: 'end' });
     }
-  }, [entries.length, findings.length, assistant?.messages?.length, assistant?.tasks?.length]);
+  }, [entries.length, findings.length, assistant?.messages?.length, assistant?.tasks?.length, pendingReply?.id, pendingReplies.length]);
   // Returning to a view puts its list back where it was; a detail always starts at the top.
   useEffect(() => {
     const el = scroller.current;
@@ -612,8 +615,6 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
     setText(value); setReplyQuotes([]); setDraftTaskContext(null); onClearTaskContext?.(); setFocus(lane); setDraftFallback(lane);
     requestAnimationFrame(() => composerInput.current?.focus());
   };
-  const pendingReplies=(assistant?.events??[]).filter(e=>e.source?.kind==='human'&&['received','processing'].includes(e.state));
-  const pendingReply=pendingReplies.find(e=>e.state==='processing')??pendingReplies[0];
   const round=composerButton({hasContent:!!text.trim()||!!attachmentState.paths.length,canCall:!!window.apexDeck?.voice&&voice.candidates.length>0,live:voice.slot.live,look:voice.slot.look});
   const composerLane = attachmentLane ?? replyQuotes[0]?.laneId ?? target ?? PERSONAL;
 
@@ -809,7 +810,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
           </article>
         );
       })}
-      {embedded && pendingReply && (
+      {embedded && !phone && pendingReply && (
         <article className="apex-agent-message-row assistant" key="typing-indicator">
           <div className="assistant-chat-message assistant apex-agent-personal">
             <small className="apex-agent-message-meta">{assistantAvatar}{personal!.name}</small>
@@ -817,6 +818,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
           </div>
         </article>
       )}
+      {phone && pendingReply && personal && <AssistantWorkingTurn key={pendingReply.id} lane={personal} event={pendingReply} queued={pendingReplies.length - 1} busy={busy} onStop={personal.cancelReply ? () => void run(() => personal.cancelReply!(pendingReply.id)) : undefined} />}
       {!filterWorkspaceId && personal?.problem && <article className="assistant-chat-message assistant"><small>{personal.name} · {personal.hostName}</small><p>{personal.problem}</p></article>}
       {!filterWorkspaceId && personal?.setUp && !monitors.length && <div className="apex-agent-intro"><strong>Your assistant can live on {personal.hostName}.</strong><p>It keeps one conversation that stays there when {LOCAL_HOST_REFERENCE} is closed. Choose “Set up assistant on {personal.hostName}” from ⋯.</p></div>}
       {!monitors.length && !assistant && !personal?.setUp && <div className="apex-agent-intro"><strong>Hi, I’m {conversationName}.</strong><p>I keep up with all your projects in one conversation. Pick a project to watch from ⋯ and tell me what to keep on track.</p></div>}
@@ -831,7 +833,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
     </div>}
     {(!!watched.length || !!selectedTaskContext || !!assistant) && <form ref={composerShell} className={embedded?`composer assistant-thread-composer${tldr?' tldr':''}${planOn?' plan':''}`:`apex-agent-all-composer${phone ? ` ph-composer${tldr?' tldr':''}${planOn?' plan':''}` : ''}`} onSubmit={send} hidden={!embedded && view !== 'chat'}>
       {embedded&&<VoiceCallBar settings={voice.settings} candidates={voice.candidates} who={voice.who}/>}
-      {pendingReply&&personal?.cancelReply&&<div className="assistant-reply-progress" role="status"><span>{pendingReplies.length>1?`Replying · ${pendingReplies.length-1} queued`:'Replying…'}</span><button type="button" className="round-send stop" aria-label="Stop reply" onClick={()=>void run(()=>personal.cancelReply!(pendingReply.id))}>■ Stop</button></div>}
+      {!phone&&pendingReply&&personal?.cancelReply&&<div className="assistant-reply-progress" role="status"><span>{pendingReplies.length>1?`Replying · ${pendingReplies.length-1} queued`:'Replying…'}</span><button type="button" className="round-send stop" aria-label="Stop reply" onClick={()=>void run(()=>personal.cancelReply!(pendingReply.id))}>■ Stop</button></div>}
       {selectedTaskContext && <div className="assistant-composer-heading"><strong>{selectedTaskContext.project} · {selectedTaskContext.label}</strong><button type="button" onClick={() => { setDraftTaskContext(null); setFocus(null); setDraftFallback(null); onClearTaskContext?.(); }}>New message</button></div>}
       <ApexAgentReplyQuote quotes={replyQuotes} onClear={() => setReplyQuotes([])} onRemove={(index) => setReplyQuotes((list) => list.filter((_, i) => i !== index))} />
       {phone && planOn && <ComposerPlanControl onPlan={()=>setPlanOn(false)}/>}

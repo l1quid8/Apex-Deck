@@ -1,3 +1,4 @@
+import { PhoneWorkingTurn } from './PhoneWorkingTurn';
 import { PhoneComposerRow } from '../ThreadComposer';
 import { WorkspaceTaskDetails } from '../WorkspaceTaskDetails';
 import { projectTaskKey } from '../apexAgentTaskView.ts';
@@ -4647,19 +4648,10 @@ function ThreadView(props: {
           const earlier = turn.steps.length - shown.length;
           const stepCount = turn.work.structured ? turn.work.steps.length : turn.steps.length;
           return (
-            <section key={`w-${id}`} className={`ph-msg ph-live${open ? " open" : ""}`} aria-busy="true">
-              {by(id, true)}
-              <div className={`ph-working${asking(id) ? " asking" : ""}`}>
-                <button type="button" className="ph-working-toggle" aria-expanded={open} aria-controls={`ph-progress-${id}`}
-                  aria-label={`${name}: ${doing.replace(/…$/, "")}. ${open ? "Hide" : "Show"} progress${stepCount > 0 ? `, ${stepCount === 1 ? "1 step" : `${stepCount} steps`}` : ""}`}
-                  onClick={() => watch(id)}>
-                  <span className="working-dots" aria-hidden="true"><i /><i /><i /></span>
-                  <span className="ph-grow ph-ellipsis" role="status">{doing}</span>
-                  <span className="ph-time">{elapsed(Math.max(0, now - turn.startedAt))}</span>
-                  <span className="ph-working-chevron" aria-hidden="true"><ChevronDown size={16} /></span>
-                </button>
-                {!paused && <button type="button" className="ph-stop" aria-label={`Stop ${name}`} onClick={() => props.onStop(id)}>Stop</button>}
-              </div>
+            <PhoneWorkingTurn key={`w-${id}`} name={name} doing={doing} header={by(id, true)} open={open}
+              progressId={`ph-progress-${id}`} onToggle={() => watch(id)} stepCount={stepCount}
+              time={elapsed(Math.max(0, now - turn.startedAt))} asking={asking(id)}
+              onStop={!paused ? () => props.onStop(id) : undefined}>
               {structured && <div className="ph-progress"><WorkSteps turn={turn.work} live maxShown={MAX_STEPS_SHOWN} renderText={(text) => <Markdown text={text} onOpen={(target) => { if (/^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} />} /></div>}
               {open && (
                 <div id={`ph-progress-${id}`} className="ph-progress">
@@ -4677,7 +4669,7 @@ function ThreadView(props: {
                     : turn.steps.length === 0 && !turn.work.structured && <p className="ph-progress-none">Nothing to show yet. Steps and the reply appear here as {name} works.</p>}
                 </div>
               )}
-            </section>
+            </PhoneWorkingTurn>
           );
         })}
         {(foldedDecision || (pendingMerge && decisionSeq === null)) && decisionCard}
