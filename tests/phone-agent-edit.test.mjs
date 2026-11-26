@@ -172,7 +172,7 @@ test('PhoneApp saves agents through the session it reads fresh from the Mac', ()
   const source = fs.readFileSync(new URL('../src/phone/PhoneApp.tsx', import.meta.url), 'utf8');
   // Through saveSession, which loads the Mac's session first, and the change is applied to that fresh
   // copy rather than replacing the agent with the sheet's older one.
-  assert.match(source, /await saveSession\(\(current\) => \{\s*const next = saveAgentDraft\(current\.profiles, change\)/);
+  assert.match(source, /await saveSession\((?:async )?\(current\) => \{\s*const next = saveAgentDraft\(current\.profiles, change\)/);
   assert.doesNotMatch(source, /profiles: upsertAgent\(current\.profiles, config\)/, 'the sheet\'s whole copy is never written over the Mac\'s agent');
   assert.match(source, /await saveSession\(\(current\) => \(\{ \.\.\.current, profiles: removeAgent\(current\.profiles, id\) \}\)\)/);
   // The Agents tab opens the sheet for a new agent and for one that exists.

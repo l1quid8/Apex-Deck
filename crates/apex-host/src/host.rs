@@ -2561,7 +2561,7 @@ impl Host {
                     if named != actual {
                         return Err("The Full access folder does not match the thread's folder.".into());
                     }
-                    crate::folder_trust::check_full_allowed(&self.paths.data, &actual)?;
+                    apex_core::agent_full_access::check(&self.paths.data, &actual, next.id.as_str())?;
                 }
             }
         }
@@ -4018,17 +4018,15 @@ impl Host {
     fn room_mount_inner(&self, id: String, cwd: String) -> Result<serde_json::Value, String> {
         // Full gate for mount: only Full bots are gated per Task 6
         let target_for_gate = PathBuf::from(&cwd);
-        let has_full = {
+        let participants = {
             if let Some(handle) = self.rooms.lock().unwrap().get(&id) {
-                handle.checkpoint.lock().unwrap().snapshot.participants.iter().any(|p| p.access == apex_core::Access::Full)
+                handle.checkpoint.lock().unwrap().snapshot.participants.clone()
             } else {
-                self.store.room(&id).ok().flatten().map(|s| s.snapshot.participants.iter().any(|p| p.access == apex_core::Access::Full)).unwrap_or(false)
+                self.store.room(&id)?.map(|s| s.snapshot.participants).unwrap_or_default()
             }
         };
-        if has_full {
-            if let Err(why) = crate::folder_trust::check_full_allowed(&self.paths.data, &target_for_gate) {
-                return Err(why);
-            }
+        for participant in participants.iter().filter(|p| p.access == apex_core::Access::Full) {
+            apex_core::agent_full_access::check(&self.paths.data, &target_for_gate, participant.id.as_str())?;
         }
         let _lifecycle = self.room_lifecycle.lock().unwrap();
         if self.assistant_tasks.execution(&id).map_err(|e| e.to_string())?.is_some() {

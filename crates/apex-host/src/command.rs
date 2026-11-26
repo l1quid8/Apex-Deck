@@ -210,6 +210,8 @@ pub enum Command {
     LibraryRemove { file: String },
     LibraryRename { file: String, name: String },
     RoomMount { id: String, cwd: String },
+    /// Confirm agent-wide Full access on this host; omission reads current approval.
+    AgentFullAccess { agent: String, #[serde(default)] confirm: bool },
     FolderAccept { path: String, who: Option<String> },
     FolderWithdraw { path: String },
     TrustStatus {},
@@ -444,7 +446,7 @@ impl Command {
             DataFolder { .. } | EnvPresent { .. } | ApiKeyStatus { .. } | ApiKeySave { .. } | ApiKeyRemove { .. } | ApiModels { .. } | ApiBalance { .. }
             | ApiQuote { .. } => Policy::OPEN,
             // File
-            StartupFolders { .. } | FolderAccept { .. } | FolderWithdraw { .. } | WorkspaceRead { .. } | PathsExist { .. } | FolderList { .. } | FileRead { .. }
+            AgentFullAccess { .. } | StartupFolders { .. } | FolderAccept { .. } | FolderWithdraw { .. } | WorkspaceRead { .. } | PathsExist { .. } | FolderList { .. } | FileRead { .. }
             | FileFind { .. } | FileSearch { .. } | FileCreate { .. } | FileWrite { .. } | FileRename { .. } | FileDuplicate { .. } | FileTrash { .. }
             | WorktreeList { .. } | BotCopiesSetCheck { .. } | WorktreeAdd { .. } | WorktreeRemove { .. } | WorktreeForget { .. } | WorktreePrune { .. } => Policy::OPEN,
             // Pty
@@ -1090,6 +1092,10 @@ impl Host {
             ModFsWrite { path, text } => reply(self.mod_fs_write(path, text)?),
             ModFsStat { path, resolve } => reply(self.mod_fs_stat(path, resolve)?),
             ModEnvGet { name } => reply(self.mod_env_get(name)),
+            AgentFullAccess { agent, confirm } => {
+                if confirm { apex_core::agent_full_access::approve(self.data_dir(), &agent)?; }
+                Ok(serde_json::json!({"approved": apex_core::agent_full_access::approved(self.data_dir(), &agent)?}))
+            }
             FolderAccept { path, who } => reply(self.folder_accept(path, who)?),
             FolderWithdraw { path } => reply(self.folder_withdraw(path)?),
             TrustStatus {} => reply(self.trust_status()?),

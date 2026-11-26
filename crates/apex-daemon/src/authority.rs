@@ -152,6 +152,7 @@ pub fn command_needs(command: &Command) -> Need {
         RoomRunnerStart { .. } => Need::Paired,
         RoomRunnerAction { .. } => Need::Paired,
         RoomRunnerState { .. } => Need::Paired,
+        AgentFullAccess { .. } => Need::Paired,
         FolderAccept { .. } => Need::Paired,
         FolderWithdraw { .. } => Need::Paired,
         TrustStatus {} => Need::Paired,
@@ -241,6 +242,8 @@ pub fn access_effect(command: &Command) -> AccessEffect {
         RoomFork { .. } => Raises,
         ChatPromote { .. } => Raises,
         RoomMount { .. } => Raises,
+        AgentFullAccess { confirm: true, .. } => Raises,
+        AgentFullAccess { confirm: false, .. } => None,
         FolderAccept { .. } => Raises,
         SessionSave { .. } => Raises,
         // The store refuses it, under its write lock, if the saved profiles
@@ -773,10 +776,20 @@ pub(crate) mod tests {
             ("room_runner_start", true, json!({ "id": "mine", "requestId": "r1", "runner": { "schemaVersion": 1, "kind": "goal", "objective": "obj", "workers": ["w1"], "limits": { "schemaVersion": 1, "lifetimeMs": 7200000 } } })),
             ("room_runner_action", true, json!({ "id": "mine", "runnerId": "r1", "expectedRevision": 1, "requestId": "r2", "action": { "action": "pause" } })),
             ("room_runner_state", true, json!({ "id": "mine" })),
+            ("agent_full_access", true, json!({ "agent": "null", "confirm": true })),
             ("folder_accept", true, json!({ "path": "/tmp/p", "who": "user" })),
             ("folder_withdraw", true, json!({ "path": "/tmp/p" })),
             ("trust_status", true, json!({})),
         ]
+    }
+
+    #[test]
+    fn agent_full_access_queries_never_grant_authority() {
+        let query: Command = serde_json::from_value(serde_json::json!({"cmd":"agent_full_access", "args":{"agent":"null"}})).unwrap();
+        assert_eq!(access_effect(&query), AccessEffect::None);
+        let grant: Command = serde_json::from_value(serde_json::json!({"cmd":"agent_full_access", "args":{"agent":"null", "confirm":true}})).unwrap();
+        assert_eq!(access_effect(&grant), AccessEffect::Raises);
+        assert!(allowed(&grant).is_ok());
     }
 
     #[test]
@@ -836,6 +849,7 @@ pub(crate) mod tests {
             ("room_fork", AccessEffect::Raises, "forks carrying levels"),
             ("chat_promote", AccessEffect::Raises, "access map promotion from chat to work"),
             ("room_mount", AccessEffect::Raises, "widens what a level can write"),
+            ("agent_full_access", AccessEffect::Raises, "agent-wide code execution confirmation raises access"),
             ("folder_accept", AccessEffect::Raises, "lets Full bot run lower code, same as raise"),
             ("session_save", AccessEffect::Raises, "session JSON can carry profiles with Full access"),
             ("session_save_layout", AccessEffect::None, "store refuses it under the write lock when profiles would change"),

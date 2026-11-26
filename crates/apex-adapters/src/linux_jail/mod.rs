@@ -333,9 +333,9 @@ pub fn build_spec(
 
     // Task 8: Full gate and taint record — same file as apex-host/folder_trust.rs
     // Mark tainted before jail starts, sync to disk for crash safety.
-    // Full launches refused if tainted and not accepted.
+    // Full launches require agent confirmation or legacy folder acceptance.
     if matches!(access, apex_core::Access::Full) {
-        if let Err(why) = check_full_allowed(data_dir, cwd) {
+        if let Err(why) = apex_core::agent_full_access::check(data_dir, cwd, bot) {
             return Err(JailError::Login(why));
         }
     }

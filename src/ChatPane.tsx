@@ -1,3 +1,5 @@
+import { AgentFullAccessStatus } from "./AgentFullAccessStatus";
+import { confirmAgentFullAccess } from "./agentFullAccess";
 import { useComposerHistory } from "./useComposerHistory";
 import { threadHistoryTexts } from "./composerHistory";
 import { stepDraft } from "./phone/stepDraft";
@@ -1634,6 +1636,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
     if ("error" in identity) return setFormError(identity.error);
     const config = { ...built, id: identity.id, appearance: built.appearance ?? (editing ? appearance(editing) : createAppearance([...identities.current.values()])) };
     try {
+      await confirmAgentFullAccess(backend, config);
       if (profileMode) {
         const next = editing ? participants.map((p) => p.id === editing ? config : p) : [...participants, config];
         setParticipants(next);
@@ -3396,6 +3399,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
                 ]}
               />
               <span className="hint">{accessNote}</span>
+              {editing && draft.access === "full" && participants.find(p => p.id === editing)?.access === "full" && <AgentFullAccessStatus backend={backend} config={participants.find(p => p.id === editing)!} />}
             </div>
           )}
           {!isWindows && <label className="voice-field">
