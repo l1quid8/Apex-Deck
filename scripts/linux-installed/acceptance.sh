@@ -95,7 +95,8 @@ test -x /usr/local/bin/$SLUG && test -x /usr/local/sbin/$SLUG-install
 desktop-file-validate /usr/local/share/applications/dev.apexdeck.app.nightly.desktop
 ls /usr/local/share/icons/hicolor/*/apps/dev.apexdeck.app.nightly.png >/dev/null
 # The agent jail's own bubblewrap: root-owned, only the enrolled account may run it.
-[[ "$(stat -c '%U:%G %a' /usr/local/libexec/$SLUG /usr/local/libexec/$SLUG/bwrap)" == \
+JAIL_DIR=/var/lib/$SLUG-jail
+[[ "$(stat -c '%U:%G %a' $JAIL_DIR $JAIL_DIR/bwrap)" == \
    "root:$(id -gn "$TESTER") 750"$'\n'"root:$(id -gn "$TESTER") 750" ]] || fail "jail bubblewrap copy missing or loosely owned"
 if "$INSTALL" install --user "$TESTER" </dev/null >/tmp/apex-acceptance-reinstall.log 2>&1; then
   fail "second install did not refuse existing authority"
@@ -153,7 +154,7 @@ step "Uninstall keeps authority and the launcher is gone"
 pkill -u "$TESTER" -f "/opt/$SLUG/" || true
 /usr/local/sbin/$SLUG-install uninstall </dev/null
 ! systemctl is-active --quiet "$SERVICE" || fail "broker still active after uninstall"
-[[ ! -e /usr/local/bin/$SLUG && ! -e /opt/$SLUG && ! -e /usr/local/libexec/$SLUG ]] || fail "uninstall left the tree, launcher or jail bubblewrap"
+[[ ! -e /usr/local/bin/$SLUG && ! -e /opt/$SLUG && ! -e $JAIL_DIR ]] || fail "uninstall left the tree, launcher or jail bubblewrap"
 [[ -f /var/lib/$SLUG-provenance/public-key ]] || fail "uninstall removed authority without --purge"
 if "$INSTALL" install --user "$TESTER" </dev/null >/tmp/apex-acceptance-reinstall-2.log 2>&1; then
   fail "install over kept authority was not refused"

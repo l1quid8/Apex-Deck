@@ -34,8 +34,10 @@ readonly DESKTOP="/usr/local/share/applications/${APP_ID}.desktop"
 readonly ICONS=/usr/local/share/icons/hicolor
 readonly APPARMOR="/etc/apparmor.d/${SLUG}"
 # Deck's own bubblewrap for the agent jail: the only copy AppArmor lets make
-# user namespaces, runnable by the enrolled account alone.
-readonly JAIL_DIR="/usr/local/libexec/${SLUG}"
+# user namespaces, runnable by the enrolled account alone. It lives outside
+# /usr, /bin and /lib, which every jail mounts, so no jailed agent can run it.
+# The broker reads the same path (linux_runtime.rs, jail_bwrap).
+readonly JAIL_DIR="/var/lib/${SLUG}-jail"
 readonly JAIL_BWRAP="$JAIL_DIR/bwrap"
 readonly SYSTEMD=/etc/systemd/system
 
@@ -171,16 +173,27 @@ install_launcher() { # tree
 # The agent jail runs bubblewrap, which needs user namespaces too. Rather than
 # exempt the system's /usr/bin/bwrap for every program, copy it into a
 # root-owned folder only the enrolled account can enter and exempt that copy
-# alone. The broker points the engine at it. Repair refreshes the copy.
+# alone. The broker points the engine at it and refreshes it whenever the
+# system's bubblewrap is updated. Only needed where AppArmor restricts user
+# namespaces; elsewhere the system bubblewrap works as it is.
 install_jail_bwrap() { # user
-  local user=$1 system group
+  local user=$1 system group members others
+  rm -rf -- "$JAIL_DIR"
+  [[ -r /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]] || return 0
   system=$(command -v bwrap 2>/dev/null) || {
-    rm -rf -- "$JAIL_DIR"
     say "Note: bubblewrap is not installed, so agents below Full access stay off. Install it (apt install bubblewrap), then run '$INSTALLER repair'."
     return 0
   }
   system=$(realpath -e "$system")
   group=$(id -g "$user")
+  # The group decides who may run the exempt copy, so it must be the
+  # account's own private group, as Ubuntu creates by default.
+  members=$(getent group "$group" | cut -d: -f4)
+  others=$(getent passwd | awk -F: -v g="$group" -v u="$user" '$4 == g && $1 != u' | wc -l)
+  if [[ -n $members && $members != "$user" ]] || (( others > 0 )); then
+    say "Note: $user's primary group is shared, so agents below Full access stay off. Give $user a private primary group, then run '$INSTALLER repair'."
+    return 0
+  fi
   install -d -m 0750 -o root -g "$group" "$JAIL_DIR"
   install -m 0750 -o root -g "$group" "$system" "$JAIL_BWRAP.new"
   mv -f "$JAIL_BWRAP.new" "$JAIL_BWRAP"

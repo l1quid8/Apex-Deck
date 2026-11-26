@@ -13,14 +13,55 @@ use std::{
     path::Path,
 };
 
-/// Deck's own bubblewrap, copied by the installer to `/usr/local/libexec/<slug>/bwrap`
-/// and the only copy its AppArmor profile lets make user namespaces. Passed to
-/// the engine only while it is a root-owned file no one else can replace.
-fn jail_bwrap() -> Option<std::path::PathBuf> {
-    let slug = Path::new(crate::channel::LINUX_TREE).file_name()?;
-    let bwrap = Path::new("/usr/local/libexec").join(slug).join("bwrap");
+/// Deck's own bubblewrap, copied by the installer to `/var/lib/<slug>-jail/bwrap`
+/// (outside every path a jail mounts) and the only copy its AppArmor profile
+/// lets make user namespaces. Passed to the engine only while it is a
+/// root-owned file no one else can replace, and only after it matches the
+/// system's bubblewrap again, so a security update reaches it at the next
+/// engine start. Any doubt leaves it out: the jail then fails closed.
+fn jail_bwrap(gid: u32) -> Option<std::path::PathBuf> {
+    let slug = Path::new(crate::channel::LINUX_TREE).file_name()?.to_str()?;
+    let dir = Path::new("/var/lib").join(format!("{slug}-jail"));
+    let bwrap = dir.join("bwrap");
     let meta = std::fs::symlink_metadata(&bwrap).ok()?;
-    (meta.file_type().is_file() && crate::linux_install::protected_path(&bwrap).is_ok()).then_some(bwrap)
+    if !meta.file_type().is_file() || crate::linux_install::protected_path(&bwrap).is_err() {
+        return None;
+    }
+    match refresh_jail_bwrap(&dir, &bwrap, gid) {
+        Ok(()) => Some(bwrap),
+        Err(error) => {
+            eprintln!("apex-provenance: agent jail bubblewrap left out: {error}");
+            None
+        }
+    }
+}
+
+fn refresh_jail_bwrap(dir: &Path, bwrap: &Path, gid: u32) -> Result<(), String> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let system = Path::new("/usr/bin/bwrap").canonicalize().map_err(|e| format!("system bubblewrap: {e}"))?;
+    crate::linux_install::protected_path(&system)?;
+    let fresh = std::fs::read(&system).map_err(|e| e.to_string())?;
+    let current = std::fs::read(bwrap).map_err(|e| e.to_string())?;
+    let owned = |path: &Path| std::fs::symlink_metadata(path).is_ok_and(|m| m.uid() == 0 && m.gid() == gid);
+    if fresh == current && owned(dir) && owned(bwrap) {
+        return Ok(());
+    }
+    let next = dir.join("bwrap.new");
+    let _ = std::fs::remove_file(&next);
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o700)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&next)
+        .map_err(|e| e.to_string())?;
+    file.write_all(&fresh).and_then(|()| file.sync_all()).map_err(|e| e.to_string())?;
+    std::os::unix::fs::fchown(&file, Some(0), Some(gid)).map_err(|e| e.to_string())?;
+    file.set_permissions(std::fs::Permissions::from_mode(0o750)).map_err(|e| e.to_string())?;
+    drop(file);
+    std::os::unix::fs::lchown(dir, Some(0), Some(gid)).map_err(|e| e.to_string())?;
+    std::fs::rename(&next, bwrap).map_err(|e| e.to_string())
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -237,7 +278,7 @@ impl Context {
             command
                 .args(["serve", "--local-only", "--data-dir"])
                 .arg(registration.data_dir());
-            if let Some(bwrap) = jail_bwrap() {
+            if let Some(bwrap) = jail_bwrap(registration.gid()) {
                 command.env("APEX_JAIL_BWRAP", bwrap);
             }
         } else {
