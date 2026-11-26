@@ -2725,14 +2725,15 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
   const unknownServers = serverTargets.length && serverTargets.every(id => serverLists[id] !== undefined)
     ? resolveServerRequests(requestedServers, serverTargets.flatMap(id => serverLists[id])).unknown : [];
   // Picture and video bots: each provider's model list, so the composer knows what a message will cost.
-  const [providerModels, setProviderModels] = useState<Record<string, ApiModel[]>>({});
+  const [providerCatalog, setProviderCatalog] = useState<{ host: typeof backend; lists: Record<string, ApiModel[]> } | null>(null);
+  const providerModels = providerCatalog?.host === backend ? providerCatalog.lists : {};
   const providerSources = participants.flatMap(p => p.backend.kind === "open_ai_compatible" ? [p.backend] : []);
   const providerSig = [...new Set(providerSources.map(b => sourceKey(b.base_url, b.api_key_env)))].join("\n");
   useEffect(() => {
     let live = true;
     for (const b of providerSources) {
       const key = sourceKey(b.base_url, b.api_key_env);
-      backend.apiModels(b.base_url, b.api_key_env).catch(() => []).then(list => { if (live) setProviderModels(lists => ({ ...lists, [key]: list })); }).catch(() => {});
+      backend.apiModels(b.base_url, b.api_key_env).catch(() => []).then(list => { if (live) setProviderCatalog(prev => ({ host: backend, lists: { ...(prev?.host === backend ? prev.lists : {}), [key]: list } })); }).catch(() => {});
     }
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2848,8 +2849,13 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
       paneId: pane.id, hostId: backend.host?.id ?? "local", queue: turnQueue.instance, canPickAgent,
       agents: () => apiState.current.participants.map(p => ({ id: p.id, handle: mentionFor(p), name: p.display_name })),
       defaultTargets: () => current.current.roomTargets(pane.id, ""),
+      previewImages: async (routing, override) => {
+        const to = override ?? stickyFor(routing, turnQueue.items) ?? await backend.roomTargets(pane.id, routing);
+        const { participants, providerModels } = sendChecks.current;
+        return imageNoticeFor(to, participants, providerModels);
+      },
       submit: p => {
-        const { id, done } = apiState.current.submitDraft({ body: p.text, routing: p.routing, lead: "", servers: parseServerRequests(p.routing).map(s => s.name), replies: null, paths: [], files: p.files, tldr: p.tldr, to: p.to }, true);
+        const { id, done } = apiState.current.submitDraft({ body: p.text, routing: p.routing, lead: "", servers: parseServerRequests(p.routing).map(s => s.name), replies: null, paths: [], files: p.files, imageWarning: p.imageWarning, tldr: p.tldr, to: p.to }, true);
         void done.catch(() => {});
         return { queue: turnQueue.instance, id };
       },
@@ -2865,7 +2871,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
     };
     onSendApi(pane.id, api);
     return () => onSendApi(pane.id, null);
-  }, [onSendApi, pane.id, backend, canPickAgent, turnQueue, profileMode, talkOnly]);
+  }, [onSendApi, pane.id, backend, canPickAgent, turnQueue, profileMode, talkOnly, providerCatalog, participants]);
 
   const send = async (steer = false) => {
     if (admittingOwn.current || (dock?.since && Date.now() - dock.since < 600)) return;
