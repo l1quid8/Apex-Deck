@@ -101,21 +101,24 @@ test('shared dock keeps real thread drafts, caret, sizing and external insertion
         await run(()=>{
           const file = new File(['fixture'], 'example.png', {type:'image/png'});
           const transfer = new DataTransfer(); transfer.items.add(file);
-          const picker = document.querySelector('.composer input[type=file]');
+          const composer = document.querySelector('.composer textarea').closest('.composer');
+          window.imageComposer = composer;
+          const picker = composer.querySelector('input[type=file]');
           picker.files = transfer.files; picker.dispatchEvent(new Event('change',{bubbles:true}));
         });
-        await wait(()=>document.body.textContent.includes('Bot can’t receive images') && document.querySelector('.round-send:disabled'), 'text-only warning before send');
+        await wait(()=>window.imageComposer.textContent.includes('Bot can’t receive images') && window.imageComposer.querySelector('.round-send:disabled'), 'text-only warning before send');
         win.webContents.sendInputEvent({type:'keyDown',keyCode:'Enter'});
         win.webContents.sendInputEvent({type:'keyUp',keyCode:'Enter'});
         assert.equal(await run(()=>window.posts.length),1);
-        assert.ok(await run(()=>document.querySelector('[aria-label="Remove example.png"]')));
+        assert.ok(await run(()=>window.imageComposer.querySelector('[aria-label="Remove example.png"]')));
         await type('@vision inspect this');
-        await wait(()=>document.body.textContent.includes('Checking image support…') && document.querySelector('.round-send:disabled'), 'checking a model keeps Send disabled');
+        await wait(()=>window.imageComposer.textContent.includes('Checking image support…') && window.imageComposer.querySelector('.round-send:disabled'), 'checking a model keeps Send disabled');
         await run(()=>window.modelWaiters.splice(0).forEach(r=>r()));
-        await wait(()=>document.querySelector('.round-send:not(:disabled)') && !document.body.textContent.includes('Bot can’t receive images'), 'vision recipient accepts the same draft');
+        await wait(()=>window.imageComposer.querySelector('.round-send:not(:disabled)') && !window.imageComposer.textContent.includes('Bot can’t receive images'), 'vision recipient accepts the same draft');
         win.webContents.sendInputEvent({type:'keyDown',keyCode:'Enter'});
         win.webContents.sendInputEvent({type:'keyUp',keyCode:'Enter'});
         await wait(()=>window.posts.length===2,'image was posted');
+        assert.deepEqual(await run(()=>window.posts[1][2]), ['vision']);
         assert.match(await run(()=>window.posts[1][1]), /Attached image: .*example.png/);
         console.log('Composer dock real ChatPane checks passed');app.exit(0);
       }catch(e){console.error(e.stack);app.exit(1);}
