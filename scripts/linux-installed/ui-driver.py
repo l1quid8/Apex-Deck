@@ -368,7 +368,16 @@ def new_thread(session, project):
 
 
 def add_codex(session):
-    session.press("'Add agent' in the composer", role="button", name="Add agent")
+    # A thread with no agents shows only the empty state's "+ Add agents"; the
+    # composer's "Add agent" chip appears once the thread has agents or entries.
+    # Both open the same "Add an agent" dialog.
+    def opener():
+        for name in ("Add agent", "+ Add agents"):
+            for node in find_all(session.root(), role="button", name=name):
+                if visible(node) and enabled(node):
+                    return node
+        return None
+    click(session.until("'Add agent' or the empty thread's '+ Add agents'", opener), "add agent")
     dialog = session.button("the 'Add an agent' dialog", role="dialog", name="Add an agent", need_enabled=False)
     codex = session.until("the Codex tool choice", lambda: next(
         (n for n in find_all(dialog, role="radio button") if "Codex" in name_of(n) and enabled(n)), None))
