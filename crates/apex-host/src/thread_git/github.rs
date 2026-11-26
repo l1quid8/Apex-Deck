@@ -709,7 +709,7 @@ impl ThreadGit {
             Decision::HeadChanged => {
                 let detail = "The pull request changed. A new receipt is needed to merge it.";
                 let moved = self.update(room, w, |job| {
-                    job.phase = Phase::Cancelled;
+                    job.phase = Phase::Superseded;
                     job.detail = detail.into();
                 })?;
                 return Ok(moved.then(|| detail.into()));

@@ -128,6 +128,7 @@ pub enum Phase {
     Submitting,
     Cancelling,
     Cancelled,
+    Superseded,
     Failed,
     Blocked,
     Merged,

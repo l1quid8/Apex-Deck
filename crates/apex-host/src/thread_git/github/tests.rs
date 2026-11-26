@@ -226,7 +226,8 @@ async fn externally_finished_prs_reconcile_during_pending_ci_even_at_a_newer_hea
                 (Phase::Syncing, "new-head", Some("merge-oid"))
             ),
             _ => {
-                assert_eq!(saved.phase, Phase::Cancelled);
+                assert_eq!(saved.phase, Phase::Superseded);
+                assert!(store.admit("r", &super::super::WorkflowKey::of(&saved)).is_err());
                 assert_eq!(
                     store.workflows().unwrap(),
                     vec![("r".into(), saved.clone())]

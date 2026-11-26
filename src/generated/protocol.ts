@@ -602,7 +602,7 @@ export type PersonalViewContext = {
   openThreadIds?: Array<string>;
 };
 
-export type Phase = "syncing" | "ready" | "preparing" | "checks" | "submitting" | "cancelling" | "cancelled" | "failed" | "blocked" | "merged";
+export type Phase = "syncing" | "ready" | "preparing" | "checks" | "submitting" | "cancelling" | "cancelled" | "superseded" | "failed" | "blocked" | "merged";
 
 export type PlanRun = {
   by: ParticipantId;
