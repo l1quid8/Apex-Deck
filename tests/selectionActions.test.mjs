@@ -37,6 +37,6 @@ test("the desktop and the phone both draw this one", () => {
 
 test("a queued message taken back, or one that couldn't be sent, returns to the box with its quotes", () => {
   const source = readFileSync(new URL("../src/phone/PhoneApp.tsx", import.meta.url), "utf8");
-  assert.match(source, /const entry: QueuedDraft = \{[^}]*\bdraft\b[^}]*\bquotes: sentQuotes\b/, "Send keeps the quotes with what it was typed as");
+  assert.match(source, /const entry: QueuedDraft = \{ draft, quotes: sentQuotes, inBox: true\b/, "Send keeps the draft and quotes in the box while waiting");
   assert.ok(/if \(sent\?\.quotes\.length\) setQuotes\(.*quotesBack\(/.test(source), "taking one back puts its quotes back");
 });
