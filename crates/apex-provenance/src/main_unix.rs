@@ -542,7 +542,7 @@ fn main() {
         let result=(|| -> Result<(),String> {
             if args.len()!=5 {return Err("Usage: apex-provenance stage-linux-release MANIFEST SIGNATURE ARCHIVE".into());}
             let target=linux_install::stage_release(Path::new(&args[2]),Path::new(&args[3]),Path::new(&args[4]))?;
-            println!("Staged verified evaluation payload: {}",target.display());
+            println!("Staged verified payload: {}",target.display());
             Ok(())
         })();
         if let Err(error)=result {eprintln!("apex-provenance: {error}");std::process::exit(1);}

@@ -93,10 +93,11 @@ try {
   verified(verifyArgs(otherPrefix));
   rejectsChannel(args);
   checkLegacy(other);
-  // The ordinary verifier must remain disabled even with an evaluation key in
-  // its runtime environment. Build without the evaluation feature.
+  // The ordinary verifier never trusts an evaluation key, even one in its
+  // runtime environment. Build without the evaluation feature: it either has
+  // no publisher key for this channel or trusts only the committed ones.
   compile(channel.name, false);
   const disabled = spawnSync(verifier, args, { env, encoding: 'utf8' });
-  assert.equal(disabled.status, 1); assert.match(disabled.stderr, /trust is not provisioned/);
+  assert.equal(disabled.status, 1); assert.match(disabled.stderr, /trust is not provisioned|Invalid release signature/);
   console.log('Native signer/verifier interop, legacy Stable, cross-channel rejection, tamper and unprovisioned trust checks passed.');
 } finally { rmSync(root, { recursive: true, force: true }); }

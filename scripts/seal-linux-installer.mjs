@@ -8,7 +8,10 @@
 //     --appimage NAME.AppImage --date YYYYMMDD --out DIR
 //
 // The identity comes from the workflow's plan, never from the bundle. The key
-// must be one of linux-publisher-keys.json's keys for the channel. This is a
+// must be one of linux-publisher-keys.json's keys for the channel. --data-root
+// names a folder holding the planned commit's channels.json, installer script
+// and key list (git archive), so the seal checks against the same files the
+// shipped broker and installer were built from, without running its code. This is a
 // custody boundary, not a content attestation: the build job made the payload,
 // and the seal checks that the manifest describes that payload and this build.
 import { execFileSync } from 'node:child_process';
@@ -26,7 +29,9 @@ const SPKI_ED25519 = Buffer.from('302a300506032b6570032100', 'hex');
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const hashFile = (file) => sha256(readFileSync(file));
 
-export function publisherKeys(channel, file = path.join(repo, 'crates/apex-provenance/linux-publisher-keys.json')) {
+const KEYS_FILE = 'crates/apex-provenance/linux-publisher-keys.json';
+
+export function publisherKeys(channel, file = path.join(repo, KEYS_FILE)) {
   const keys = JSON.parse(readFileSync(file, 'utf8'))[channel];
   if (!Array.isArray(keys) || keys.some((key) => typeof key !== 'string' || !/^[A-Za-z0-9+/]{43}=$/.test(key))) {
     throw new Error(`linux-publisher-keys.json has no valid key list for ${channel}`);
@@ -38,11 +43,11 @@ export const rawPublicKey = (key) => createPublicKey(key).export({ type: 'spki',
 export const publicKeyObject = (raw) => createPublicKey({ key: Buffer.concat([SPKI_ED25519, Buffer.from(raw, 'base64')]), type: 'spki', format: 'der' });
 
 /** The installer script as package-linux-installer.mjs renders it, from this checkout. */
-export function renderedInstaller(channel, arch) {
-  const identity = JSON.parse(readFileSync(path.join(repo, 'desktop/channels.json'), 'utf8'))[channel];
+export function renderedInstaller(channel, arch, root = repo) {
+  const identity = JSON.parse(readFileSync(path.join(root, 'desktop/channels.json'), 'utf8'))[channel];
   const names = ['PRODUCT', 'APP_ID', 'LINUX_ROOT', 'LINUX_RUNTIME', 'LINUX_TREE', 'LINUX_SERVICE', 'LINUX_DAEMON_UNIT'];
   const values = { ...Object.fromEntries(names.map((name) => [name, identity[name]])), CHANNEL: channel, ARCH: arch };
-  return readFileSync(path.join(repo, 'scripts/linux-installer/apex-deck-install.sh'), 'utf8')
+  return readFileSync(path.join(root, 'scripts/linux-installer/apex-deck-install.sh'), 'utf8')
     .replace(/@@([A-Z_]+)@@/g, (match, name) => {
       if (!(name in values)) throw new Error(`Unknown installer placeholder ${match}`);
       return values[name];
@@ -77,7 +82,7 @@ function checkListing(unsigned, top) {
   if (seen.size !== allowed.size) throw new Error('the unsigned bundle is missing files');
 }
 
-export function seal({ unsigned, keyPath, out, keysFile, ...id }) {
+export function seal({ unsigned, keyPath, out, dataRoot = repo, keysFile = path.join(dataRoot, KEYS_FILE), ...id }) {
   checkIdentity(id);
   const keyStat = lstatSync(keyPath);
   if (!keyStat.isFile() || keyStat.mode & 0o077) throw new Error('the signing key must be a regular file readable only by its owner');
@@ -100,7 +105,7 @@ export function seal({ unsigned, keyPath, out, keysFile, ...id }) {
       if (!st.isFile() || st.nlink !== 1) throw new Error(`${file} is not a plain file`);
     }
     const installer = readFileSync(path.join(root, 'apex-deck-install'), 'utf8');
-    if (installer !== renderedInstaller(id.channel, id.arch)) throw new Error('apex-deck-install is not this commit\'s installer');
+    if (installer !== renderedInstaller(id.channel, id.arch, dataRoot)) throw new Error('apex-deck-install is not this commit\'s installer');
 
     const manifestPath = path.join(root, 'release/manifest.json');
     const payloadPath = path.join(root, 'release/payload.tar');
@@ -146,9 +151,10 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   try {
     const args = Object.fromEntries(process.argv.slice(2).reduce((pairs, value, i, all) => (i % 2 ? pairs : [...pairs, [value.replace(/^--/, ''), all[i + 1]]]), []));
     const needed = ['unsigned', 'key', 'channel', 'version', 'commit', 'arch', 'appimage', 'date', 'out'];
-    if (needed.some((key) => !args[key])) throw new Error(`Usage: seal-linux-installer.mjs ${needed.map((key) => `--${key} X`).join(' ')} [--build-number N]`);
+    if (needed.some((key) => !args[key])) throw new Error(`Usage: seal-linux-installer.mjs ${needed.map((key) => `--${key} X`).join(' ')} [--build-number N] [--data-root DIR]`);
     const result = seal({
-      unsigned: args.unsigned, keyPath: args.key, out: args.out, channel: args.channel, version: args.version,
+      unsigned: args.unsigned, keyPath: args.key, out: args.out, ...(args['data-root'] ? { dataRoot: path.resolve(args['data-root']) } : {}),
+      channel: args.channel, version: args.version,
       commit: args.commit, arch: args.arch, appImage: args.appimage, date: args.date,
       buildNumber: args['build-number'] === undefined ? undefined : Number(args['build-number']),
     });

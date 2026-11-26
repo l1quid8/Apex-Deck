@@ -5,7 +5,7 @@ import { createHash, generateKeyPairSync, verify } from 'node:crypto';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { publicKeyObject, rawPublicKey, renderedInstaller, seal } from '../scripts/seal-linux-installer.mjs';
+import { publicKeyObject, publisherKeys, rawPublicKey, renderedInstaller, seal } from '../scripts/seal-linux-installer.mjs';
 
 const linux = process.platform === 'linux';
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -84,5 +84,31 @@ test('refuses a signing key others can read', { skip: !linux }, () => {
   try {
     chmodSync(f.keyPath, 0o644);
     assert.throws(() => seal({ unsigned: f.unsigned, keyPath: f.keyPath, out: f.out, keysFile: f.keysFile, ...id }), /readable only by its owner/);
+  } finally { rmSync(f.dir, { recursive: true, force: true }); }
+});
+
+test('the committed publisher keys are valid Ed25519 keys and no channel shares one', () => {
+  const stable = publisherKeys('stable');
+  const nightly = publisherKeys('nightly');
+  for (const raw of [...stable, ...nightly]) {
+    assert.equal(Buffer.from(raw, 'base64').length, 32);
+    assert.equal(publicKeyObject(raw).asymmetricKeyType, 'ed25519');
+  }
+  assert.deepEqual(stable.filter((key) => nightly.includes(key)), []);
+  assert.equal(new Set(nightly).size, nightly.length);
+});
+
+test('the seal checks against the planned commit\'s data root, not only this checkout', { skip: !linux }, () => {
+  const f = fixture();
+  try {
+    const root = path.join(f.dir, 'planned');
+    mkdirSync(path.join(root, 'desktop'), { recursive: true });
+    mkdirSync(path.join(root, 'scripts/linux-installer'), { recursive: true });
+    mkdirSync(path.join(root, 'crates/apex-provenance'), { recursive: true });
+    const here = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+    writeFileSync(path.join(root, 'desktop/channels.json'), readFileSync(path.join(here, 'desktop/channels.json')));
+    writeFileSync(path.join(root, 'scripts/linux-installer/apex-deck-install.sh'), '#!/bin/bash\n# an older installer @@PRODUCT@@\n');
+    writeFileSync(path.join(root, 'crates/apex-provenance/linux-publisher-keys.json'), readFileSync(f.keysFile));
+    assert.throws(() => seal({ unsigned: f.unsigned, keyPath: f.keyPath, out: f.out, dataRoot: root, ...id }), /not this commit's installer/);
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
 });

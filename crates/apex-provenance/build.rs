@@ -26,7 +26,9 @@ fn main() {
         .map(|key| key.as_str().expect("publisher keys are strings"))
         .collect();
     for key in &keys {
-        assert!(key.len() == 44 && key.bytes().all(|b| b.is_ascii_alphanumeric() || b"+/=".contains(&b)), "Invalid Linux publisher key encoding");
+        // 32 bytes in base64: 43 data characters then exactly one '='.
+        let (data, pad) = key.split_at(key.len().min(43));
+        assert!(data.len() == 43 && pad == "=" && data.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/'), "Invalid Linux publisher key encoding: {key}");
     }
     println!("cargo:rustc-env=APEX_LINUX_PUBLISHER_TRUST_ROOTS={}", keys.join(","));
     println!("cargo:rerun-if-env-changed=APEX_LINUX_EVALUATION_PUBLIC_KEY");

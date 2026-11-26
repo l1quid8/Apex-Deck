@@ -747,6 +747,12 @@ mod tests {
         );
     }
     #[test]
+    fn the_compiled_publisher_keys_decode() {
+        for key in trust_roots(env!("APEX_LINUX_PUBLISHER_TRUST_ROOTS")).unwrap() {
+            assert_eq!(key.len(), 32);
+        }
+    }
+    #[test]
     fn trust_roots_parse_strictly() {
         use base64::Engine;
         let one = base64::engine::general_purpose::STANDARD.encode([7u8; 32]);

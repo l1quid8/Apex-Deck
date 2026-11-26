@@ -199,7 +199,12 @@ jobs:
           unset SIGNING_KEY
           version=$(git show "$COMMIT:package.json" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).version))')
           appimage="Apex-Deck-Nightly_${DATE}_${COMMIT:0:7}_${ARCH}.AppImage"
-          env -i PATH="$PATH" HOME="$HOME" node scripts/seal-linux-installer.mjs \
+          # Check against the planned commit's data, the files its broker and
+          # installer were built from; the seal code itself comes from this ref.
+          data="$RUNNER_TEMP/planned"
+          mkdir -p "$data"
+          git archive "$COMMIT" desktop/channels.json scripts/linux-installer crates/apex-provenance/linux-publisher-keys.json | tar -x -C "$data"
+          env -i PATH="$PATH" HOME="$HOME" node scripts/seal-linux-installer.mjs --data-root "$data" \
             --unsigned "unsigned/${appimage%.AppImage}.linux-installer.unsigned.tar" --key "$key" \
             --channel nightly --version "$version" --commit "$COMMIT" --build-number "$BUILD_NUMBER" \
             --arch "$INSTALLER_ARCH" --appimage "$appimage" --date "$DATE" --out sealed
