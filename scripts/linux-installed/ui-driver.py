@@ -250,16 +250,23 @@ def key(keysym):
     time.sleep(0.3)
 
 
-def ctrl(keysym):
-    control = 1 << 2  # ControlMask
-    Atspi.generate_keyboard_event(control, None, Atspi.KeySynthType.LOCKMODIFIERS)
+def chord(modifier, keysym):
+    Atspi.generate_keyboard_event(modifier, None, Atspi.KeySynthType.LOCKMODIFIERS)
     time.sleep(0.1)
     key(keysym)
-    Atspi.generate_keyboard_event(control, None, Atspi.KeySynthType.UNLOCKMODIFIERS)
+    Atspi.generate_keyboard_event(modifier, None, Atspi.KeySynthType.UNLOCKMODIFIERS)
     time.sleep(0.3)
 
 
-RETURN, ESCAPE, LETTER_L = 0xFF0D, 0xFF1B, 0x6C
+def ctrl(keysym):
+    chord(1 << 2, keysym)  # ControlMask
+
+
+def alt(keysym):
+    chord(1 << 3, keysym)  # Mod1Mask
+
+
+RETURN, ESCAPE, LETTER_L, LETTER_O = 0xFF0D, 0xFF1B, 0x6C, 0x6F
 
 
 def text_of(node):
@@ -310,7 +317,11 @@ def ensure_project(session, folder):
     """Select the sidebar project for `folder`, adding it through
     Add workspace > This Mac and the GTK folder chooser when it is missing.
     The GTK dialog is not on the accessibility bus, so it is driven with
-    synthesized keys: Ctrl+L, the path, Return."""
+    synthesized keys: Ctrl+L, the path, then Alt+O for Open.
+
+    Not Return: Chromium makes Cancel the folder dialog's default response
+    (ui/gtk/select_file_dialog_linux_gtk.cc, CreateSelectFolderDialog), so
+    Return in the location bar cancels and Electron reports `canceled`."""
     name = os.path.basename(folder.rstrip("/"))
     node = project_button(session, name)
     if node is None:
@@ -321,12 +332,11 @@ def ensure_project(session, folder):
         ctrl(LETTER_L)
         keys(folder.rstrip("/") + "/")
         time.sleep(0.7)
-        log(f"active window before Return: {active_window()!r}")
         snapshot("chooser-typed")
-        key(RETURN)
+        alt(LETTER_O)
         watch_notices(session, lambda: project_button(session, name), 20)
-        log(f"active window after Return: {active_window()!r}")
-        snapshot("after-return")
+        log(f"active window after Open: {active_window()!r}")
+        snapshot("after-open")
         node = session.until(f"project {name!r} in the sidebar", lambda: project_button(session, name))
     click(node, f"project {name!r}")
     return name
