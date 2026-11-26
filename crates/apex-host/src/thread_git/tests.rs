@@ -729,3 +729,19 @@ fn an_older_client_naming_the_git_state_still_acts_on_the_card() {
     let ThreadGitAction::CancelMerge { expected } = action else { panic!() };
     assert!(expected.key().is_err());
 }
+
+#[test]
+fn stale_external_observations_cannot_replace_a_newer_workflow() {
+    let f = Fixture::new();
+    f.mark("builder", "model-a", true);
+    let original = f.store.get("r").unwrap().unwrap();
+    let found = f.store.set_pr("r", &original, 42).unwrap();
+    assert!(f.store.mark_closed("r", &original).is_err());
+    assert_eq!(f.store.workflows().unwrap(), vec![("r".into(), found.clone())]);
+    let merged_head = "b".repeat(40);
+    let oid = "c".repeat(40);
+    f.store.mark_observed_merge("r", &found, oid.clone(), merged_head.clone()).unwrap();
+    assert!(f.store.workflows().unwrap().is_empty());
+    let synced = f.store.get("r").unwrap().unwrap();
+    assert_eq!((synced.phase, synced.head, synced.result_oid), (Phase::Syncing, merged_head, Some(oid)));
+}

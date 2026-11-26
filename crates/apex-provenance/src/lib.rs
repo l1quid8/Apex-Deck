@@ -738,6 +738,7 @@ fn document_key(uid: u32, data_dir: &str, name: &str) -> Result<String, String> 
                 | "project-memory-v1.json"
                 | "room-runners-v1.json"
                 | "thread-git-v1.json"
+                | "pr-watch-v1.json"
                 | "devices.json"
         )
     {

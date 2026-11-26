@@ -109,6 +109,7 @@ pub struct Facts<'a> {
     pub room: &'a str,
     /// An agent is working, so there is no finished reply to sit under.
     pub busy: bool,
+    pub watched: bool,
     pub reply: Option<Reply<'a>>,
     pub workflow: Option<&'a Workflow>,
     /// The commit checked out in the thread's folder right now.
@@ -160,7 +161,7 @@ pub fn decide(facts: &Facts<'_>, dismissed: impl Fn(&str) -> bool) -> Option<Dec
     }
     let current = facts.workflow.filter(|w| facts.head == Some(w.head.as_str()));
     let candidate = current.and_then(|w| match (&w.phase, facts.checks) {
-        (Phase::Failed, _) if !w.fix_requested => Some(git(
+        (Phase::Failed, _) if !w.fix_requested && !facts.watched => Some(git(
             w,
             Kind::FixFailed,
             "fix",
@@ -179,7 +180,7 @@ pub fn decide(facts: &Facts<'_>, dismissed: impl Fn(&str) -> bool) -> Option<Dec
             card.pr = Some(*pr);
             Some(card)
         }
-        (Phase::Ready | Phase::Cancelled, Checks::Failed { pr, detail }) if !w.fix_requested => {
+        (Phase::Ready | Phase::Cancelled, Checks::Failed { pr, detail }) if !w.fix_requested && !facts.watched => {
             let mut card = git(
                 w,
                 Kind::FixChecks,
@@ -386,11 +387,27 @@ mod tests {
     fn decided(mode: Mode, w: Option<&Workflow>, checks: Checks, text: &str, dismissed: &[String]) -> Option<Decision> {
         let head = "a".repeat(40);
         decide(
-            &Facts { mode, room: "r", busy: false, reply: Some(Reply { seq: 7, by: Some("jigga"), text }), workflow: w, head: Some(&head), checks: &checks },
+            &Facts { mode, watched: false, room: "r", busy: false, reply: Some(Reply { seq: 7, by: Some("jigga"), text }), workflow: w, head: Some(&head), checks: &checks },
             |key| dismissed.iter().any(|k| k == key),
         )
     }
     const PASSED: Checks = Checks::Passed { pr: 42 };
+
+    #[test]
+    fn watcher_owns_failures_only_for_watched_tasks() {
+        for phase in [Phase::Ready, Phase::Failed] {
+            let w = workflow(phase, false);
+            let checks = Checks::Failed { pr: 42, detail: "check failed".into() };
+            let mut facts = Facts {
+                mode: Mode::DecisionCard, watched: true, room: "r", busy: false,
+                reply: Some(Reply { seq: 7, by: Some("worker"), text: "Done." }),
+                workflow: Some(&w), head: Some(&w.head), checks: &checks,
+            };
+            assert!(decide(&facts, |_| false).is_none());
+            facts.watched = false;
+            assert!(decide(&facts, |_| false).is_some());
+        }
+    }
 
     #[test]
     fn each_row_of_the_table() {
@@ -470,7 +487,7 @@ mod tests {
     #[test]
     fn a_new_commit_or_a_working_agent_removes_the_merge_card() {
         let ready = workflow(Phase::Ready, true);
-        let facts = |head: &'static str, busy| Facts { mode: Mode::DecisionCard, room: "r", busy, reply: Some(Reply { seq: 7, by: Some("jigga"), text: "Done." }), workflow: Some(&ready), head: Some(head), checks: &PASSED };
+        let facts = |head: &'static str, busy| Facts { mode: Mode::DecisionCard, watched: false, room: "r", busy, reply: Some(Reply { seq: 7, by: Some("jigga"), text: "Done." }), workflow: Some(&ready), head: Some(head), checks: &PASSED };
         let stale = "b".repeat(40);
         let stale: &'static str = Box::leak(stale.into_boxed_str());
         let same: &'static str = Box::leak("a".repeat(40).into_boxed_str());

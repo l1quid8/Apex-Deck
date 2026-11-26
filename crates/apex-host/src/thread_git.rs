@@ -150,6 +150,8 @@ pub struct Workflow {
     pub result_oid: Option<String>,
     pub pushed: bool,
     pub fix_requested: bool,
+    #[serde(default)]
+    pub local_check_failed: bool,
     /// Asked for from the decision card, where the checks had already passed:
     /// if they no longer do, the merge stops and nothing waits.
     #[serde(default)]
@@ -190,6 +192,7 @@ impl Workflow {
         }
         self.generation += 1;
         self.phase = Phase::Preparing;
+        self.local_check_failed = false;
         self.detail = "Publishing the commit…".into();
         Ok(())
     }
@@ -250,6 +253,44 @@ impl ThreadGit {
                 .collect())
         })
     }
+    pub(crate) fn workflows(&self) -> Result<Vec<(String, Workflow)>, String> {
+        self.edit(|rooms| Ok(rooms.iter()
+            .filter(|(_, w)| !w.pending() && !matches!(w.phase, Phase::Merged | Phase::Blocked))
+            .map(|(room, w)| (room.clone(), w.clone()))
+            .collect()))
+    }
+
+    pub(crate) fn set_pr(&self, room: &str, expected: &Workflow, pr: u64) -> Result<Workflow, String> {
+        let mut next = expected.clone();
+        next.pr = Some(pr);
+        self.save_observation(room, expected, next.clone())?;
+        Ok(next)
+    }
+
+    pub(crate) fn mark_closed(&self, room: &str, expected: &Workflow) -> Result<(), String> {
+        let mut next = expected.clone();
+        next.phase = Phase::Blocked;
+        next.detail = "The pull request was closed without merging.".into();
+        self.save_observation(room, expected, next)
+    }
+
+    pub(crate) fn mark_observed_merge(&self, room: &str, expected: &Workflow, oid: String, head: String) -> Result<(), String> {
+        let mut next = expected.clone();
+        next.result_oid = Some(oid);
+        next.head = head;
+        next.phase = Phase::Syncing;
+        next.detail = "Updating the local checkout…".into();
+        self.save_observation(room, expected, next)
+    }
+
+    fn save_observation(&self, room: &str, expected: &Workflow, next: Workflow) -> Result<(), String> {
+        if self.update(room, expected, |w| *w = next)? {
+            Ok(())
+        } else {
+            Err("The workflow changed while checking the pull request.".into())
+        }
+    }
+
     // Every async result compares its complete starting state before applying.
     fn update(
         &self,
@@ -332,6 +373,7 @@ impl ThreadGit {
                         detail: "Waiting for checks".into(),
                         pushed: false,
                         fix_requested: false,
+                        local_check_failed: false,
                         ready_only: false,
                     },
                 );
@@ -489,6 +531,7 @@ pub async fn push(data: &Path, state: &State) -> Result<(), String> {
 mod github;
 pub(crate) mod ship;
 pub use github::checks;
+pub(crate) use github::{find_pr, observe_pr};
 #[cfg(test)]
 pub(crate) use github::fake_checks;
 #[cfg(test)]

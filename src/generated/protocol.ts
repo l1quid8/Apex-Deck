@@ -1100,6 +1100,7 @@ export type Workflow = {
   fix_requested: boolean;
   generation: number;
   head: string;
+  local_check_failed?: boolean;
   phase: Phase;
   pr?: number | null;
   pushed: boolean;
