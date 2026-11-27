@@ -1,3 +1,5 @@
+import { PhoneWorkingTurn } from './PhoneWorkingTurn';
+import { PhoneComposerRow } from '../ThreadComposer';
 import { WorkspaceTaskDetails } from '../WorkspaceTaskDetails';
 import { projectTaskKey } from '../apexAgentTaskView.ts';
 import { addTokenUsage } from "../tokenUsage";
@@ -3258,7 +3260,7 @@ export function PhoneApp() {
           </div>
         )}
         {personalOpen && (personal?.assistant || personal?.problem) && <div className="apex-agent-backdrop">
-          <ApexAgentAll key={personal?.draftKey ?? 'legacy'} draftKey={personal?.draftKey} workspaces={workspaces} delegatedTasks={handoffTasks} onOpenProjectTask={openHandoffTask} offlineWorkspaceIds={assistantProjects.filter(project => project.link?.status !== 'online' || !project.allowed || !!assistantRegistryErrors[project.workspace.id]).map(project => project.workspace.id)} monitors={[]} personal={personal} serverStatusByLane={{ personal: 'Use Connections for integrations; direct tool commands are unavailable here.' }} onReply={async () => {}} onMutate={async () => {}} onReact={(laneId, messageId, emoji, enabled) => laneId === 'personal' && personal ? personal.react(messageId, emoji, enabled) : Promise.reject(new Error('That assistant lane is unavailable.'))} saveAttachment={async (laneId, name, bytes) => {
+          <ApexAgentAll phone key={personal?.draftKey ?? 'legacy'} draftKey={personal?.draftKey} workspaces={workspaces} delegatedTasks={handoffTasks} onOpenProjectTask={openHandoffTask} offlineWorkspaceIds={assistantProjects.filter(project => project.link?.status !== 'online' || !project.allowed || !!assistantRegistryErrors[project.workspace.id]).map(project => project.workspace.id)} monitors={[]} personal={personal} serverStatusByLane={{ personal: 'Use Connections for integrations; direct tool commands are unavailable here.' }} onReply={async () => {}} onMutate={async () => {}} onReact={(laneId, messageId, emoji, enabled) => laneId === 'personal' && personal ? personal.react(messageId, emoji, enabled) : Promise.reject(new Error('That assistant lane is unavailable.'))} saveAttachment={async (laneId, name, bytes) => {
             if (laneId !== 'personal' || !personal?.assistant || personal.offline) throw new Error('The personal assistant host is unavailable.');
             return personal.saveAttachment(name, bytes);
           }} pickFolderUnavailableReason="Folder selection is unavailable on this phone." onSetUp={() => {}} onClose={() => setPersonalOpen(false)} />
@@ -4646,19 +4648,10 @@ function ThreadView(props: {
           const earlier = turn.steps.length - shown.length;
           const stepCount = turn.work.structured ? turn.work.steps.length : turn.steps.length;
           return (
-            <section key={`w-${id}`} className={`ph-msg ph-live${open ? " open" : ""}`} aria-busy="true">
-              {by(id, true)}
-              <div className={`ph-working${asking(id) ? " asking" : ""}`}>
-                <button type="button" className="ph-working-toggle" aria-expanded={open} aria-controls={`ph-progress-${id}`}
-                  aria-label={`${name}: ${doing.replace(/…$/, "")}. ${open ? "Hide" : "Show"} progress${stepCount > 0 ? `, ${stepCount === 1 ? "1 step" : `${stepCount} steps`}` : ""}`}
-                  onClick={() => watch(id)}>
-                  <span className="working-dots" aria-hidden="true"><i /><i /><i /></span>
-                  <span className="ph-grow ph-ellipsis" role="status">{doing}</span>
-                  <span className="ph-time">{elapsed(Math.max(0, now - turn.startedAt))}</span>
-                  <span className="ph-working-chevron" aria-hidden="true"><ChevronDown size={16} /></span>
-                </button>
-                {!paused && <button type="button" className="ph-stop" aria-label={`Stop ${name}`} onClick={() => props.onStop(id)}>Stop</button>}
-              </div>
+            <PhoneWorkingTurn key={`w-${id}`} name={name} doing={doing} header={by(id, true)} open={open}
+              progressId={`ph-progress-${id}`} onToggle={() => watch(id)} stepCount={stepCount}
+              time={elapsed(Math.max(0, now - turn.startedAt))} asking={asking(id)}
+              onStop={!paused ? () => props.onStop(id) : undefined}>
               {structured && <div className="ph-progress"><WorkSteps turn={turn.work} live maxShown={MAX_STEPS_SHOWN} renderText={(text) => <Markdown text={text} onOpen={(target) => { if (/^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} />} /></div>}
               {open && (
                 <div id={`ph-progress-${id}`} className="ph-progress">
@@ -4676,7 +4669,7 @@ function ThreadView(props: {
                     : turn.steps.length === 0 && !turn.work.structured && <p className="ph-progress-none">Nothing to show yet. Steps and the reply appear here as {name} works.</p>}
                 </div>
               )}
-            </section>
+            </PhoneWorkingTurn>
           );
         })}
         {(foldedDecision || (pendingMerge && decisionSeq === null)) && decisionCard}
@@ -4817,13 +4810,10 @@ function ThreadView(props: {
         )}
         {props.callStrip}
         {/* One row, as in Messages: + for files and tools, then the message box. */}
-        <div className="ph-compose-row">
-          {/* A chat is talk-only: no files to attach and no tools to pick. */}
-          {!props.chat && <button type="button" className="ph-add" aria-label={props.draft.files.length > 0 ? `Add files or tools. ${props.draft.files.length} attached` : "Add files or tools"} onClick={props.onOpenComposer}>
+        <PhoneComposerRow tools={!props.chat && <button type="button" className="ph-add" aria-label={props.draft.files.length > 0 ? `Add files or tools. ${props.draft.files.length} attached` : "Add files or tools"} onClick={props.onOpenComposer}>
             <Plus size={22} />
             {props.draft.files.length > 0 && <b className="ph-count">{props.draft.files.length}</b>}
-          </button>}
-          <div className={`ph-input${pillCall ? " ph-in-call" : ""}`}>
+          </button>} inputClassName={pillCall ? "ph-in-call" : ""}>
             <textarea ref={inputRef} aria-label={props.to ? `Message ${props.to}` : "Message this thread"} rows={1} value={props.draft.text}
               onPaste={(event) => {
                 if (props.chat) return;
@@ -4854,8 +4844,7 @@ function ThreadView(props: {
               onClick={props.onTldr}><span aria-hidden="true">TL;</span><span aria-hidden="true">DR</span></button>
             {props.call?.(round.mic)}
             {round.send && <button type="submit" className="ph-send" aria-label={props.sending ? `Sending to ${props.machine}` : props.attaching ? "Attaching a file" : props.queueing && props.to ? `Queue for ${props.to}. It goes when ${props.to} finishes` : `Send to ${props.machine}`} disabled={!props.gate.enabled || props.sending || props.attaching}><ArrowUp size={21} /></button>}
-          </div>
-        </div>
+        </PhoneComposerRow>
         {paused && <p className="ph-caption warn">{props.gate.reason}</p>}
       </form>
     </>

@@ -1,5 +1,5 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
-import type { RefObject } from 'react';
+import type { RefObject, ReactNode } from 'react';
 import type { ToolServer } from './types';
 import type { Command } from './commands';
 import { ComposerMenu, type ComposerMenuHandle } from './ComposerTools';
@@ -24,6 +24,8 @@ type PendingAttachment = { id: string; name: string; file?: File; save?: (name: 
  *  command execution because each lane may have a different machine/destination. */
 export const ApexAgentComposerTools = forwardRef<ApexAgentComposerToolsHandle, {
   draftKey?: string;
+  phone?: boolean;
+  render?: (tools: ReactNode, tray: ReactNode) => ReactNode;
   value: string;
   onChange: (value: string) => void;
   inputRef: RefObject<HTMLTextAreaElement | null>;
@@ -48,7 +50,7 @@ export const ApexAgentComposerTools = forwardRef<ApexAgentComposerToolsHandle, {
   disabled?: boolean;
   trigger: Trigger | null;
 }>(({
-  draftKey, value, onChange, inputRef, menuRef, participants, servers = [], serverStatus, mods = [], planOn = false,
+  draftKey, phone = false, render, value, onChange, inputRef, menuRef, participants, servers = [], serverStatus, mods = [], planOn = false,
   onCommand, saveAttachment, pickFolder, onChooseAttachment, onChooseFolder, onTools, onAttachmentState, includeAll = true, allMentionDetail,
   folderUnavailableReason, filesUnavailableReason, disabledCommands, disabled = false, trigger,
 }, ref) => {
@@ -164,13 +166,13 @@ export const ApexAgentComposerTools = forwardRef<ApexAgentComposerToolsHandle, {
     if (item.kind === 'server') { insert(item.label + ' ', activeTrigger); return; }
     if (item.kind === 'tools') { if (onTools) onTools(); else insert('!', activeTrigger); }
   };
-  return <>
-    <div className="composer-tools" onPointerDown={() => { const field = inputRef.current; if (field) caret.current = field.selectionStart; }}>
-      <ComposerMenu ref={menuRef} participants={participants} servers={servers} serverStatus={serverStatus} mods={mods} planOn={planOn} disabled={disabled}
+  const tools = <div className="composer-tools" onPointerDown={() => { const field = inputRef.current; if (field) caret.current = field.selectionStart; }}>
+      <ComposerMenu phone={phone} ref={menuRef} participants={participants} servers={servers} serverStatus={serverStatus} mods={mods} planOn={planOn} disabled={disabled}
         trigger={trigger} choose={chooseItem} canAttach={!!saveAttachment} canAttachFolder={!!pickFolder}
         includeAll={includeAll} allMentionDetail={allMentionDetail} folderUnavailableReason={folderUnavailableReason} filesUnavailableReason={filesUnavailableReason}
         canUseTools={servers.length > 0 || !!serverStatus || !!onTools} disabledCommands={disabledCommands} />
-    </div>
+    </div>;
+  const tray = <>
     <input ref={chooser} type="file" multiple hidden disabled={disabled} onChange={(event) => {
       const files = Array.from(event.currentTarget.files ?? []);
       event.currentTarget.value = '';
@@ -185,4 +187,5 @@ export const ApexAgentComposerTools = forwardRef<ApexAgentComposerToolsHandle, {
       <button className="attachment-remove" type="button" disabled={disabled || item.busy} aria-label={`Remove ${item.name}`} onClick={() => { if (item.preview) URL.revokeObjectURL(item.preview); setAttachments(previous => previous.filter(current => current.id !== item.id)); }}>×</button>
     </div>)}</div>}
   </>;
+  return render ? render(tools, tray) : <>{tools}{tray}</>;
 });
