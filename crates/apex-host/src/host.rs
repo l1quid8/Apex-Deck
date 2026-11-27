@@ -172,6 +172,7 @@ pub struct Host {
     events: Bus,
     store: Store,
     settings_write: Mutex<()>,
+    pub(crate) personal_admin: crate::personal_admin::AdminState,
     pub(crate) thread_git: crate::thread_git::ThreadGit,
     pub(crate) task_branches: Arc<crate::task_branches::TaskBranches>,
     /// This host, for work that has only `&self` (a turn's events) but must
@@ -200,6 +201,7 @@ pub struct Host {
     pub(crate) monitor_wake: Arc<tokio::sync::Notify>,
     pub(crate) monitor_clock: Mutex<Option<tokio::task::JoinHandle<()>>>,
     pub(crate) personal_wake: Arc<tokio::sync::Notify>,
+    pub(crate) responsibility_clock: Mutex<crate::personal_responsibilities::ResponsibilityClock>,
     pub(crate) personal_worker: Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// One stop signal per running personal-assistant operation, keyed `<assistant>:<task>`.
     pub(crate) personal_stops: Mutex<HashMap<String, Arc<tokio::sync::Notify>>>,
@@ -354,6 +356,7 @@ impl Host {
             events: Bus::default(),
             store,
             settings_write: Mutex::new(()),
+            personal_admin: Default::default(),
             snapshots,
             quit: QuitGate::default(),
             tool_servers: Mutex::default(),
@@ -373,6 +376,7 @@ impl Host {
             monitor_clock: Mutex::new(None),
             personal_wake: Arc::new(tokio::sync::Notify::new()),
             personal_worker: Mutex::new(None),
+            responsibility_clock: Mutex::default(),
             personal_stops: Mutex::default(),
             steps: Default::default(),
             phone,
@@ -662,6 +666,7 @@ impl Host {
                 if let Err(why) = self.store.save_live_progress(room, progress) { eprintln!("[apex-deck] could not save stopped turn progress: {why}"); }
             },
             RoomEvent::MessageAdded { message } => if let apex_core::Speaker::Bot(id) = &message.speaker {
+                self.wake_responsibility_room(room);
                 if let Err(why) = self.store.clear_live_progress(room, Some(id.as_str())) { eprintln!("[apex-deck] could not clear replied turn progress: {why}"); }
             },
             _ => {}
@@ -1110,6 +1115,7 @@ impl Host {
             options,
             None,
             false,
+            false,
         )?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1143,12 +1149,24 @@ impl Host {
     /// Recoverable lifecycle transition, serialized against room replacement and
     /// checkout actions. This never deletes room history or starts a turn.
     pub fn room_set_trashed(&self,id:String,trashed:bool)->Result<crate::storage::ChatRoomMeta,String> {
+        self.room_set_trashed_if(id, trashed, None)
+    }
+
+    pub(crate) fn room_set_trashed_if(&self, id: String, trashed: bool, expected: Option<u64>) -> Result<crate::storage::ChatRoomMeta, String> {
+        self.room_set_trashed_checked(id, trashed, expected, None)
+    }
+
+    pub(crate) fn trash_unchanged_created_thread(&self, id: &str, signature: &str, revision: u64) -> Result<(), String> {
+        self.room_set_trashed_checked(id.to_owned(), true, Some(revision), Some(signature)).map(|_| ())
+    }
+
+    fn room_set_trashed_checked(&self, id: String, trashed: bool, expected: Option<u64>, created_room: Option<&str>) -> Result<crate::storage::ChatRoomMeta, String> {
         let _lifecycle=self.room_lifecycle.lock().unwrap();
         let handle=self.handle(&id).ok();
         let _action=match &handle {Some(h)=>Some(h.checkout_action.try_write().map_err(|_|"Wait for the current room action to finish.")?),None=>None};
         if self.store.room(&id)?.is_none() {return Err("Thread unavailable.".into())}
         if handle.as_ref().is_some_and(|h|h.runtime.busy() || h.has_pending_human_waits()) {return Err("Stop work and resolve outstanding requests before moving this thread to Trash.".into())}
-        let meta = self.store.update_chat_meta(&id,|meta| {if trashed {meta.trashed_at=Some(meta.trashed_at.unwrap_or_else(now_millis));} else {meta.trashed_at=None;}meta.updated_at=meta.updated_at.max(now_millis());})?;
+        let meta = self.store.update_chat_meta_checked(&id,expected,created_room,|meta| {if trashed {meta.trashed_at=Some(meta.trashed_at.unwrap_or_else(now_millis));} else {meta.trashed_at=None;}meta.updated_at=meta.updated_at.max(now_millis());})?;
         if trashed { if let Some(handle) = &handle { handle.context.retire_sessions(None); } }
         self.emit(HostEvent::ThreadCatalogChanged {});
         Ok(meta)
@@ -1161,6 +1179,11 @@ impl Host {
         archived: Option<bool>,
         moved_to: Option<Option<crate::storage::ChatMovedTo>>,
     ) -> Result<crate::storage::ChatRoomMeta, String> {
+        self.chat_update_meta_if(id, title, archived, moved_to, None)
+    }
+
+    pub(crate) fn chat_update_meta_if(&self, id: String, title: Option<String>, archived: Option<bool>,
+        moved_to: Option<Option<crate::storage::ChatMovedTo>>, expected: Option<u64>) -> Result<crate::storage::ChatRoomMeta, String> {
         let _lifecycle = self.room_lifecycle.lock().unwrap();
         self.store.require_room_not_deleted(&id)?;
         if self.store.room(&id)?.is_none() && !self.rooms.lock().unwrap().contains_key(&id) {
@@ -1170,7 +1193,7 @@ impl Host {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
-        let meta = self.store.update_chat_meta(&id, |meta| {
+        let meta = self.store.update_chat_meta_if(&id, expected, |meta| {
             if let Some(t) = title {
                 meta.title_managed=true;
                 let trimmed = t.trim();
@@ -1191,10 +1214,10 @@ impl Host {
 
     /// A read may attach to saved authority, but cannot create a new manifest.
     fn room_open(self: &Arc<Self>, id: String, participants: Vec<ParticipantConfig>, options: RoomOptions, cwd: Option<String>, saved_only: bool) -> Result<RoomSnapshot, String> {
-        self.room_open_with_kind(id, apex_core::RoomKind::Work, participants, options, cwd, saved_only)
+        self.room_open_with_kind(id, apex_core::RoomKind::Work, participants, options, cwd, saved_only, false)
     }
 
-    fn room_open_with_kind(
+    pub(crate) fn room_open_with_kind(
         self: &Arc<Self>,
         id: String,
         default_kind: apex_core::RoomKind,
@@ -1202,9 +1225,13 @@ impl Host {
         options: RoomOptions,
         cwd: Option<String>,
         saved_only: bool,
+        create_only: bool,
     ) -> Result<RoomSnapshot, String> {
         let _lifecycle = self.room_lifecycle.lock().unwrap();
         self.store.require_room_not_deleted(&id)?;
+        if create_only && (self.store.room(&id)?.is_some() || self.rooms.lock().unwrap().contains_key(&id)) {
+            return Err("A thread with this id already exists".into());
+        }
         if self.assistant_tasks.execution(&id).map_err(|e| e.to_string())?.is_some_and(|entry| entry.is_tombstoned()) { return Err("This execution thread was deleted.".into()); }
         if let Some(handle) = self.rooms.lock().unwrap().get(&id) {
             let existing = handle.checkpoint.lock().unwrap().snapshot.clone();
@@ -1754,6 +1781,36 @@ impl Host {
                 Ok(()) => {}
             }
         });
+    }
+
+    pub(crate) async fn admin_send_to_thread(self: &Arc<Self>, owner: &str, id: String, text: &str, targets: &serde_json::Value) -> Result<(), String> {
+        if self.assistant_tasks.execution(&id).map_err(|e| e.to_string())?.is_some() {
+            return Err("Task execution owns this conversation".into());
+        }
+        self.room_open(id.clone(), vec![], RoomOptions::default(), None, true)?;
+        let gate = self.runner_gate(&id);
+        let _runner = gate.lock().await;
+        if self.runner_service.lock().unwrap().state(&id)?.is_some_and(|s|
+            matches!(s.phase, crate::runner::RunnerPhase::Running | crate::runner::RunnerPhase::Waiting | crate::runner::RunnerPhase::Scheduled)) {
+            return Err("A runner owns this thread".into());
+        }
+        let handle = self.handle(&id)?;
+        let _action = handle.lock_checkout().await?;
+        self.require_not_trashed(&id)?;
+        self.refuse_moved_chat(&id)?;
+        let targets = self.admin_recipients(owner, &id, text, targets)?;
+        let speaker = apex_core::Speaker::Bot(ParticipantId::new(format!("assistant:{owner}")));
+        let batch = handle.runtime.begin_post_with_commit_keeping_default(
+            speaker, text, Some(targets), true, &|snapshot| self.commit_client_snapshot(&id, &handle, snapshot),
+            &|event| {
+                if let RoomEvent::MessageAdded { message } = &event {
+                    update_chat_message_meta(&self.store, &id, handle.checkpoint.lock().unwrap().snapshot.kind.is_chat(), message);
+                }
+                self.room_event(&id, event);
+            }).await?;
+        handle.observation_revision.fetch_add(1, Ordering::SeqCst);
+        self.run_batch_in_background(id, handle.clone(), batch);
+        Ok(())
     }
 
     /// Compatibility command for the existing UI; resolves when this chain ends.
@@ -2428,16 +2485,23 @@ impl Host {
     }
 
     pub async fn room_set_options(&self, id: String, options: RoomOptions) -> Result<(), String> {
-        let handle = self.handle(&id)?;
+        self.change_room_options(&id, |_| Ok(options)).await.map(|_| ())
+    }
+
+    pub(crate) async fn change_room_options(&self, id: &str, change: impl FnOnce(RoomOptions) -> Result<RoomOptions, String>) -> Result<RoomOptions, String> {
+        let handle = self.handle(id)?;
         let _action = handle.lock_checkout().await?;
-        self.require_idle(&id)?;
-        {
-            let room = self.room(&id)?;
-            let mut room = room.lock().await;
-            self.require_idle(&id)?;
-            room.set_options(options);
-        }
-        self.save_room(&id).await
+        let mut room = handle.room.lock().await;
+        self.require_idle(id)?;
+        let before = room.options();
+        let updated = change(before)?;
+        let mut snapshot = room.snapshot();
+        snapshot.options = updated;
+        self.commit_client_snapshot(id, &handle, &snapshot)?;
+        room.set_options(updated);
+        drop(room);
+        self.room_event_for(id, &handle, RoomEvent::StateChanged);
+        Ok(before)
     }
 
     pub async fn room_add_participant(self: &Arc<Self>, id: String, participant: ParticipantConfig) -> Result<(), String> {
@@ -3303,6 +3367,14 @@ impl Host {
             }
         }
         self.save_settings_locked(settings)
+    }
+
+    pub(crate) fn admin_edit_settings<T>(&self, edit: impl FnOnce(&mut serde_json::Value) -> Result<T, String>) -> Result<T,String> {
+        let _write = self.settings_write.lock().unwrap();
+        let mut settings = self.settings_load()?.unwrap_or_else(|| serde_json::json!({}));
+        let result = edit(&mut settings)?;
+        self.save_settings_locked(settings)?;
+        Ok(result)
     }
 
     /// Patch this one machine preference without overwriting other clients' settings.

@@ -130,7 +130,7 @@ pub(crate) fn can_auto_read_context(assistant:&PersonalAssistant,room:&Target,to
     if !matches!(tool,READ|STATUS) {return false}
     let source=assistant.events.iter().rev().find(|e|matches!(&e.source,EventSource::Human{text,..} if text==query));
     let op=OperationSpec{tool:tool.into(),host:room.project.host_id.clone(),cwd:room.project.cwd.clone(),argv:vec![room.thread.clone()],plan:None};
-    let task=PersonalTask{deleted_at:None,id:"context-read".into(),goal:"Retrieve current context".into(),completion_criteria:vec![],target_host:op.host.clone(),status:TaskStatus::Queued,class:ToolClass::Read,operation:Some(op.clone()),decision:None,receipts:vec![],from_event:source.map(|e|e.id.clone()).unwrap_or_default(),max_attempts:1,created_at:0,updated_at:0,last_update:None,kind:TaskKind::Command,wait:None,runs_done:0,parent:None,schedule_id:None,assignment:None};
+    let task=PersonalTask{responsibility_id:None,deleted_at:None,id:"context-read".into(),goal:"Retrieve current context".into(),completion_criteria:vec![],target_host:op.host.clone(),status:TaskStatus::Queued,class:ToolClass::Read,operation:Some(op.clone()),decision:None,receipts:vec![],from_event:source.map(|e|e.id.clone()).unwrap_or_default(),max_attempts:1,created_at:0,updated_at:0,last_update:None,kind:TaskKind::Command,wait:None,runs_done:0,parent:None,schedule_id:None,assignment:None};
     match super::gateway::gate(assistant,&task,Some(query)) {
         Gate::Run(ActionMode::OnRequest)=>source.is_some()&&crate::personal::permissions::explicit_request(assistant,&task),
         Gate::Run(_)=>true,_=>false,
@@ -292,18 +292,27 @@ impl Host {
     }
 
     pub(crate) fn personal_room_target(&self, assistant: &PersonalAssistant, thread: &str) -> Result<Target, String> {
+        self.personal_room_target_snapshot(assistant,thread).map(|(target,_)|target)
+    }
+
+    /// Return the same protected snapshot used to authorize the room.
+    pub(crate) fn personal_room_target_snapshot(&self, assistant: &PersonalAssistant, thread: &str) -> Result<(Target, apex_core::RoomSnapshot), String> {
+        self.personal_scoped_room(assistant, thread, false)
+    }
+
+    pub(crate) fn personal_scoped_room(&self, assistant: &PersonalAssistant, thread: &str, allow_archived: bool) -> Result<(Target, apex_core::RoomSnapshot), String> {
         if thread.trim().is_empty() { return Err("The chat wasn't named.".into()); }
         let unavailable = || "That chat isn't in a project this assistant can reach.".to_owned();
         let session = self.store().session()?;
         let panes = session.as_ref().and_then(|s| s["panes"].as_array());
-        if panes.into_iter().flatten().any(|pane| pane["id"].as_str() == Some(thread) && pane["archived"] == true) {
+        if !allow_archived && panes.into_iter().flatten().any(|pane| pane["id"].as_str() == Some(thread) && pane["archived"] == true) {
             return Err(unavailable());
         }
         let bindings: Vec<_> = assistant.projects.iter().filter(|binding| binding.tools != ProjectTools::Off)
             .filter_map(|binding| self.validate_project_binding(assistant, binding.clone()).ok()).collect();
         if bindings.is_empty() { return Err(unavailable()); }
         let meta = self.store().chat_meta(thread)?;
-        if meta.as_ref().is_some_and(|meta| meta.archived) { return Err(unavailable()); }
+        if !allow_archived && meta.as_ref().is_some_and(|meta| meta.archived) { return Err(unavailable()); }
         // Exact actions need the selected room's fresh protected authority,
         // not every transcript and authority manifest in the discovery catalog.
         let saved = self.store().room(thread)?.ok_or_else(unavailable)?;
@@ -315,7 +324,7 @@ impl Host {
         }).unwrap_or_else(|| thread.to_owned());
         let workers = saved.snapshot.participants.iter().filter(|profile| crate::assistant_service::task_worker_eligible(profile))
             .map(|profile| (profile.id.to_string(), profile.display_name.clone())).collect();
-        Ok(Target { project: binding.project, thread: thread.to_owned(), title, workers, tools: binding.tools })
+        Ok((Target { project: binding.project, thread: thread.to_owned(), title, workers, tools: binding.tools },saved.snapshot))
     }
 
     /// Ask mode does not reconfirm a routine change the user just requested.
@@ -648,6 +657,13 @@ impl Host {
     fn personal_room_delivery_check(&self, assistant_id: &str, task_id: &str, op: &OperationSpec) -> Result<(), String> {
         let assistant = self.personal_get(assistant_id)?;
         let task = assistant.tasks.iter().find(|task| task.id == task_id).ok_or("The task no longer exists.")?;
+        if let Some(watch_id) = &task.responsibility_id {
+            self.check_responsibility_delivery(&assistant, watch_id, &task.from_event, op)?;
+        }
+        if assistant.admin_receipts.iter().find(|r|r.task_id.as_deref()==Some(task_id)).is_some_and(|r|
+            !crate::personal_admin::tool_risk(&r.tool).is_some_and(|risk|assistant.admin_trust.allows(risk))) {
+            return Err("Assistant trust changed before delivery".into());
+        }
         if assistant.paused || assistant.archived_at.is_some() || task.status != TaskStatus::Running {
             return Err("Stopped before it reached the chat.".into());
         }

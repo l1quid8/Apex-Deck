@@ -852,6 +852,80 @@ async fn send_is_acknowledged_before_reasoning() {
 }
 
 #[tokio::test]
+async fn conversational_admin_records_each_step_and_does_not_replay_a_delivered_action() {
+    let fixture=Fixture::new();
+    fixture.host.change_assistant(&fixture.id,|a|{
+        a.workspace_config_version=Some(4);
+        a.profile.as_mut().unwrap().access=apex_core::Access::Full;
+        Ok(())
+    }).unwrap();
+    let fake=Fake::new(true);
+    fake.say(r#"{"appCall":{"tool":"app.agent.list","args":{}}}"#);
+    fake.say(r#"{"appCall":{"tool":"app.agent.create","args":{"profile":{"id":"maya","display_name":"Maya","backend":{"kind":"scripted"}}}}}"#);
+    fake.say(r#"{"appCall":{"tool":"app.agent.list","args":{}}}"#);
+    fake.say(r#"{"reply":"Maya is saved."}"#);
+    let first=fixture.host.personal_send(&fixture.id,"admin-user-1","Save Maya as an agent and check that she is listed.").unwrap();
+    fixture.drain(&fake.tools()).await;
+    let saved=fixture.get();
+    assert_eq!(saved.admin_receipts.iter().filter(|r|r.ok && r.event_id.as_deref()==Some(&first.event_id)).count(),3);
+    assert!(saved.messages.iter().any(|m|m.text=="Maya is saved."));
+    assert!(fixture.host.personal_send(&fixture.id,"admin-user-1","Save Maya as an agent and check that she is listed.").unwrap().duplicate);
+    assert_eq!(fixture.host.agent_profile_list().unwrap()["revision"],1);
+}
+
+#[tokio::test]
+async fn admin_thread_brief_survives_restart_before_the_chat_acknowledgment() {
+    let mut fixture = Fixture::new();
+    let project = fixture.project_chat(crate::personal_workspace::ProjectTools::Full);
+    fixture.host.change_assistant(&fixture.id, |assistant| {
+        assistant.workspace_config_version = Some(4);
+        assistant.profile.as_mut().unwrap().access = apex_core::Access::Full;
+        Ok(())
+    }).unwrap();
+    fixture.host.store().save_admin_agent_profile(serde_json::json!({
+        "id":"maya","display_name":"Maya","backend":{"kind":"scripted"}
+    }), false).unwrap();
+    let brief = "@maya Please check the Windows installer.";
+    let asked = "Create an Installer QA thread with Maya and send her the Windows installer brief.";
+    let accepted = fixture.host.personal_send(&fixture.id, "create-installer", asked).unwrap();
+    let fake = Fake::new(true);
+    let mut tools = fake.tools();
+    let waiting_for_ack = Arc::new(tokio::sync::Notify::new());
+    let waiting = waiting_for_ack.clone();
+    let call = serde_json::json!({"appCall":{"tool":"app.thread.create","args":{
+        "id":"installer-qa","title":"Installer QA","cwd":project.cwd,
+        "agents":["@maya"],"initialMessage":brief
+    }}}).to_string();
+    let first = std::sync::atomic::AtomicBool::new(true);
+    tools.reason = Arc::new(move |_, _, _| {
+        let reply = first.swap(false, Ordering::SeqCst).then(|| call.clone());
+        let waiting = waiting.clone();
+        Box::pin(async move {
+            if let Some(reply) = reply { return Ok(ReasonOut::text(reply)); }
+            waiting.notify_one();
+            std::future::pending().await
+        })
+    });
+    let host = fixture.host.clone();
+    let processing = tokio::spawn(async move { host.personal_step(&tools).await });
+    tokio::time::timeout(Duration::from_secs(10), waiting_for_ack.notified()).await.unwrap();
+    processing.abort();
+    assert!(processing.await.unwrap_err().is_cancelled());
+    fixture.restart();
+    assert!(fixture.host.personal_send(&fixture.id, "create-installer", asked).unwrap().duplicate);
+    fixture.drain(&fake.tools()).await;
+    let assistant = fixture.get();
+    let receipts: Vec<_> = assistant.admin_receipts.iter().filter(|r| r.event_id.as_deref() == Some(&accepted.event_id)).collect();
+    assert_eq!(receipts.len(), 1);
+    assert!(receipts[0].ok);
+    assert!(matches!(&receipts[0].ui_target, Some(crate::personal_admin::UiTarget::Thread { thread_id }) if thread_id == "installer-qa"));
+    let room = fixture.host.store().room("installer-qa").unwrap().unwrap().snapshot;
+    assert_eq!(room.participants[0].id.as_str(), "maya");
+    assert_eq!(room.transcript.iter().filter(|m| m.text == brief).count(), 1);
+    assert_eq!(fake.reason_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
 async fn duplicate_request_id_gives_one_event_one_reply() {
     let fixture = Fixture::new();
     let fake = Fake::new(true);

@@ -78,6 +78,15 @@ pub struct SavedRoom {
     pub mounts: Vec<MountBoundary>,
 }
 
+/// Only used for the inverse of creating an empty thread. Canonical JSON
+/// keeps map ordering stable across process restarts.
+pub(crate) fn created_room_signature(cwd: Option<&str>, snapshot: &RoomSnapshot, meta: &ChatRoomMeta) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    let mut value = serde_json::to_value((cwd, snapshot, meta)).map_err(|e| e.to_string())?;
+    value.sort_all_objects();
+    Ok(format!("{:x}", Sha256::digest(value.to_string().as_bytes())))
+}
+
 /// Permission-bearing snapshot fields live separately from editable transcript data.
 #[derive(Clone,Serialize,Deserialize)]
 struct RoomAuthority {
@@ -480,6 +489,92 @@ impl Store {
         fields.insert("profileSavedBy".into(), serde_json::json!("agent-profile"));
         self.write_held(&self.root.join("session.json"),&session)?;
         Ok(session)
+    }
+
+    pub(crate) fn set_admin_thread_pin(&self, id:&str, pinned:bool, expected:Option<bool>) -> Result<(serde_json::Value,bool),String> {
+        let _guard=self.writes.lock().unwrap();
+        let mut session=self.session()?.ok_or("No saved session")?;
+        let pane=session["panes"].as_array_mut().and_then(|panes|panes.iter_mut().find(|p|p["id"]==id && p["kind"]=="chat" && p.get("hostId").and_then(|v|v.as_str()).is_none_or(|h|h=="local")))
+            .ok_or("Open the local thread in Deck before pinning it")?;
+        let previous=pane["pinned"].as_bool().unwrap_or(false);
+        if expected.is_some_and(|v|v!=previous){return Err("The thread pin changed since this action".into());}
+        pane["pinned"]=serde_json::json!(pinned);
+        self.write_held(&self.root.join("session.json"),&session)?;
+        Ok((session,previous))
+    }
+
+    fn edit_admin_profiles<T>(
+        &self,
+        edit: impl FnOnce(&mut Vec<serde_json::Value>) -> Result<T, String>,
+    ) -> Result<(serde_json::Value, T), String> {
+        use serde_json::json;
+        let _guard = self.writes.lock().unwrap();
+        let mut session = self.session()?.unwrap_or(json!({"version": 1}));
+        let fields = session.as_object_mut().ok_or("Saved session is not an object")?;
+        let revision = fields.get("profileRevision").and_then(|v| v.as_u64()).unwrap_or(0);
+        let profiles = fields.entry("profiles").or_insert_with(|| json!([]))
+            .as_array_mut().ok_or("Saved profiles are malformed")?;
+        let previous = edit(profiles)?;
+        fields.insert("profileRevision".into(), json!(revision.checked_add(1).ok_or("Profile revision overflow")?));
+        fields.insert("profileSavedBy".into(), json!("agent-profile"));
+        fields.insert("savedBy".into(), json!("agent-profile"));
+        self.write_held(&self.root.join("session.json"), &session)?;
+        Ok((session, previous))
+    }
+
+    pub(crate) fn save_admin_agent_profile(
+        &self, profile: serde_json::Value, replace: bool,
+    ) -> Result<(serde_json::Value, Option<serde_json::Value>), String> {
+        self.save_admin_profile_if(profile, replace, None, false)
+    }
+
+    pub(crate) fn save_admin_profile_if(
+        &self, profile: serde_json::Value, replace: bool, expected: Option<&serde_json::Value>, restoring_receipt:bool,
+    ) -> Result<(serde_json::Value, Option<serde_json::Value>), String> {
+        let parsed: apex_core::ParticipantConfig = serde_json::from_value(profile.clone())
+            .map_err(|err| format!("Invalid agent profile: {err}"))?;
+        let id = parsed.id.to_string();
+        if id.trim().is_empty() { return Err("Missing agent identity".into()); }
+        let mention = apex_core::mention_for(&parsed);
+        self.edit_admin_profiles(move |profiles| {
+            if !restoring_receipt {crate::personal_admin::check_profile_binding(&parsed, profiles)?;}
+            let index = profiles.iter().position(|p| p["id"].as_str().is_some_and(|v| v.eq_ignore_ascii_case(&id)));
+            if expected.is_some_and(|v| index.map(|i| &profiles[i]) != Some(v)) {
+                return Err("The saved agent changed after this action".into());
+            }
+            for (i, saved) in profiles.iter().enumerate() {
+                if Some(i) == index { continue; }
+                if serde_json::from_value::<apex_core::ParticipantConfig>(saved.clone()).ok()
+                    .is_some_and(|other| apex_core::mention_for(&other) == mention) {
+                    return Err(format!("A saved agent already answers to @{mention}"));
+                }
+            }
+            match (index, replace) {
+                (Some(i), true) => {
+                    let mut profile = profile;
+                    profile["id"] = profiles[i]["id"].clone();
+                    Ok(Some(std::mem::replace(&mut profiles[i], profile)))
+                }
+                (None, false) => { profiles.push(profile); Ok(None) }
+                (Some(_), false) => Err("That agent identity is already saved".into()),
+                (None, true) => Err("Agent no longer exists".into()),
+            }
+        })
+    }
+
+    pub(crate) fn delete_agent_profile(&self, id: &str) -> Result<(serde_json::Value, serde_json::Value), String> {
+        self.delete_admin_profile_if(id, None)
+    }
+
+    pub(crate) fn delete_admin_profile_if(&self, id: &str, expected: Option<&serde_json::Value>) -> Result<(serde_json::Value, serde_json::Value), String> {
+        self.edit_admin_profiles(|profiles| {
+            let index = profiles.iter().position(|p| p["id"].as_str().is_some_and(|v| v.eq_ignore_ascii_case(id)))
+                .ok_or("Agent no longer exists")?;
+            if expected.is_some_and(|v| v != &profiles[index]) {
+                return Err("The saved agent changed after this action".into());
+            }
+            Ok(profiles.remove(index))
+        })
     }
 
     /// App-wide settings, beside the session file. The host reads them as `documents::Settings`.
@@ -1269,10 +1364,35 @@ impl Store {
         id: &str,
         f: impl FnOnce(&mut ChatRoomMeta),
     ) -> Result<ChatRoomMeta, String> {
+        self.update_chat_meta_if(id, None, f)
+    }
+
+    pub(crate) fn update_chat_meta_if(
+        &self, id: &str, expected: Option<u64>, f: impl FnOnce(&mut ChatRoomMeta),
+    ) -> Result<ChatRoomMeta, String> {
+        self.update_chat_meta_checked(id, expected, None, f)
+    }
+
+    pub(crate) fn update_chat_meta_checked(
+        &self, id: &str, expected: Option<u64>, expected_created_room: Option<&str>, f: impl FnOnce(&mut ChatRoomMeta),
+    ) -> Result<ChatRoomMeta, String> {
         let _guard = self.writes.lock().unwrap();
         self.require_room_not_deleted(id)?;
         let mut metas = self.chat_metas_held()?;
         let mut meta = metas.remove(id).unwrap_or_default();
+        if expected.is_some_and(|revision| revision != meta.metadata_revision) {
+            return Err("Thread changed after this action".into());
+        }
+        if let Some(signature) = expected_created_room {
+            let saved = self.room(id)?.ok_or("Thread unavailable.")?;
+            let session = self.session()?.unwrap_or_default();
+            let pinned = session["panes"].as_array().into_iter().flatten().any(|p| p["id"] == id
+                && p["kind"] == "chat" && p["pinned"] == true && p["hostId"].as_str().is_none_or(|h| h == "local"));
+            if pinned || !saved.snapshot.transcript.is_empty() || !saved.mounts.is_empty()
+                || created_room_signature(saved.cwd.as_deref(), &saved.snapshot, &meta)? != signature {
+                return Err("This thread has been used or changed since it was created.".into());
+            }
+        }
         f(&mut meta);
         meta.metadata_revision=meta.metadata_revision.checked_add(1).ok_or("Thread metadata revision exhausted.")?;
         metas.insert(id.into(), meta.clone());
@@ -1978,6 +2098,33 @@ mod tests {
         assert_eq!(fork.cwd.as_deref(), Some("/tmp"));
         assert!(store.fork_room("src", "dst", Some(0), None).is_err());
         assert_eq!(store.room("dst").unwrap().unwrap().snapshot.transcript.len(), 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn admin_profiles_preserve_identity_revisions_and_previous_json() {
+        use serde_json::json;
+        let root = temp();
+        let store = Store::new(root.clone());
+        let profile = json!({"id":"A","display_name":"Alice","backend":{"kind":"scripted"},"future":42});
+        let (created, previous) = store.save_admin_agent_profile(profile.clone(), false).unwrap();
+        assert!(previous.is_none());
+        assert_eq!(created["profileRevision"], 1);
+        let mut other = profile.clone();
+        other["id"] = json!("b");
+        assert!(store.save_admin_agent_profile(other, false).is_err());
+        let mut update = profile.clone();
+        update["id"] = json!("a");
+        update["voice"] = json!("v");
+        let (updated, previous) = store.save_admin_agent_profile(update, true).unwrap();
+        assert_eq!(previous, Some(profile));
+        assert_eq!(updated["profiles"][0]["id"], "A");
+        let (deleted, removed) = store.delete_agent_profile("a").unwrap();
+        assert_eq!(removed, updated["profiles"][0]);
+        assert_eq!(deleted["profileRevision"], 3);
+        assert_eq!(deleted["savedBy"], "agent-profile");
+        assert_eq!(deleted["profileSavedBy"], "agent-profile");
+        assert_eq!(Store::new(root.clone()).session().unwrap(), Some(deleted));
         std::fs::remove_dir_all(root).unwrap();
     }
 

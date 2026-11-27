@@ -24,6 +24,24 @@ use tokio::sync::broadcast;
 // every clone to shrink a value that is moved through a channel.
 #[allow(clippy::large_enum_variant)]
 pub enum HostEvent {
+    #[serde(rename = "ui-navigate")]
+    UiNavigate {
+        target: crate::personal_admin::UiTarget,
+        #[serde(rename = "assistantId", skip_serializing_if = "Option::is_none")]
+        assistant_id: Option<String>,
+    },
+    #[serde(rename = "personal-stream")]
+    PersonalStream {
+        #[serde(rename = "assistantId")]
+        assistant_id: String,
+        #[serde(rename = "eventId")]
+        event_id: String,
+        kind: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        receipt: Option<crate::personal_admin::AdminReceipt>,
+    },
     /// A durable project or thread lifecycle change. Reload the owning host's catalog.
     #[serde(rename = "thread-catalog-changed")]
     ThreadCatalogChanged {},
@@ -62,6 +80,8 @@ impl HostEvent {
     /// The event name the desktop UI listens for.
     pub fn name(&self) -> &'static str {
         match self {
+            HostEvent::UiNavigate { .. } => "ui-navigate",
+            HostEvent::PersonalStream { .. } => "personal-stream",
             HostEvent::ThreadCatalogChanged {} => "thread-catalog-changed",
             HostEvent::AssistantTasksChanged { .. } => "assistant-tasks-changed",
             HostEvent::PersonalChanged { .. } => "personal-changed",

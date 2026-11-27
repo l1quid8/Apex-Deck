@@ -296,8 +296,23 @@ test('settings changes reach subscribers without altering their payload', async 
 test('every method is accounted for in this file', () => {
   const backend = commandBackend(recording(), stubShell());
   const known = new Set([...COMMANDS.map(c => c[0]), ...SHELL_KEYS, 'onPtyData', 'onPtyExit', 'onRoomEvent', 'onRoomRunnerChanged', 'onSessionChanged', 'onSettingsChanged', 'onThreadCatalogChanged', 'onAssistantTasksChanged',
+    'onAssistantNavigate', 'onAssistantStream',
     'saveAttachment', 'readAttachment', 'call', 'demo', 'supports', 'quitStopsWork', 'apiModels', 'apiBalance', 'apiQuote', 'modelMetrics', 'roomBotModels', 'agentBotModels', 'roomBotBalance', 'roomPlanReset', 'ptyList', 'ptyAttach', 'ptyRename', 'onPtyRenamed', 'phone']);
   assert.deepEqual(Object.keys(backend).filter(k => !known.has(k)), []);
+});
+
+test('Assistant navigation and streamed receipts preserve their conversation target', async () => {
+  const transport = recording();
+  const backend = commandBackend(transport, stubShell());
+  const navigation = { assistantId: 'alfred', target: { kind: 'thread', threadId: 'installer-qa' } };
+  const stream = { assistantId: 'alfred', eventId: 'pe-1', kind: 'receipt', receipt: { id: 'ar-1' } };
+  const received = [];
+  await backend.onAssistantNavigate(event => received.push(event));
+  await backend.onAssistantStream(event => received.push(event));
+  assert.deepEqual(transport.listens.map(x => x.event), ['ui-navigate', 'personal-stream']);
+  transport.listens[0].cb(navigation);
+  transport.listens[1].cb(stream);
+  assert.deepEqual(received, [navigation, stream]);
 });
 
 test('simulator catalog, controls and gesture geometry use the shared phone API', async () => {

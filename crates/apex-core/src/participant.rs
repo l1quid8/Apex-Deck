@@ -4,12 +4,24 @@ use crate::approval::{Approver, FileChange};
 use crate::types::{ContextUse, Message, ParticipantConfig, PlanUsage};
 use crate::view::ViewTurn;
 
+#[derive(Clone)]
+pub struct AdminTurn(std::sync::Arc<dyn for<'a> Fn(Progress<'a>) + Send + Sync>);
+impl AdminTurn {
+    pub fn new(listener:impl for<'a> Fn(Progress<'a>) + Send + Sync + 'static)->Self {Self(std::sync::Arc::new(listener))}
+    pub fn report(&self,update:Progress<'_>){(self.0)(update);}
+}
+impl PartialEq for AdminTurn {fn eq(&self,other:&Self)->bool{std::sync::Arc::ptr_eq(&self.0,&other.0)}}
+impl Eq for AdminTurn {}
+impl std::fmt::Debug for AdminTurn {fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result{f.write_str("AdminTurn")}}
+
 /// What a participant is given when it is asked to speak.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TurnRequest {
     /// Host-issued capability for this turn only. Never serialized or included
     /// in a prompt. Its helper control connection owns the actual authority.
     pub computer: Option<ComputerTurn>,
+    /// Host-local progress listener for this assistant conversation.
+    pub admin: Option<AdminTurn>,
     /// Effective workspace access for this turn, enforced by coding adapters.
     pub access: Option<crate::Access>,
     /// A validated level for this reply only; absent means use saved settings.

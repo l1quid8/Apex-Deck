@@ -232,6 +232,9 @@ export class PersonalAssistantsCollection {
       currentThread: permittedThread && currentThread ? {...currentThread,project:currentThread.project && {...currentThread.project}} : undefined,
       name: row.assistant.name, assistant: row.assistant, hostName: this.hosts.get(row.routeHostId)?.name ?? row.routeHostId, offline: this.offline(row), problem: this.hosts.get(row.routeHostId)?.problem,
       send: text => after("personal_send", { requestId: request(), text, ...sendContext() }),
+      answerResponsibility: (messageId, text) => after("personal_send", {
+        requestId: 'watch-decision:' + messageId, text,
+      }),
       handoffSelect: route.supports?.("assistant_conversation_handoff_v1") !== true ? undefined : async (draft, selection) => {
         const result = await call<import('./personalAssistant').HandoffSelectReceipt>("personal_handoff_select", {assistantId: need(), requestId: request(), draftId: draft.id, expectedDraftRevision: draft.revision, slot: draft.missing, selection});
         need(); await this.refresh(); return result;
@@ -243,6 +246,8 @@ export class PersonalAssistantsCollection {
         if (result.taskId !== input.taskId) throw new Error("The host returned a control for a different task.");
         need(); await this.refresh(); return result;
       },
+      undoAdmin: row.assistant.adminTrust === undefined ? undefined : receiptId => call("personal_admin_undo", {assistantId: need(), receiptId}),
+      setAdminTrust: row.assistant.adminTrust === undefined ? undefined : trust => call<PersonalAssistantRecord>("personal_admin_trust_set", {assistantId: need(), trust}),
       shipOffers: route.supports?.("assistant_ship_v1") !== true ? undefined : () => call("personal_ship_offers", {assistantId: need()}),
       ship: route.supports?.("assistant_ship_v1") !== true ? undefined : (pr, head) => call("personal_ship", {assistantId: need(), pr, head}),
       cancelShip: route.supports?.("assistant_ship_v1") !== true ? undefined : (room, expected) => call("room_thread_git_action", {id: room, action: {kind: "cancel_merge", expected}}),

@@ -21,7 +21,7 @@ impl Host {
             self.assistant_tasks.cancel_unstarted_announcements(id,event_id).map_err(|e|e.to_string())?;
             a.post("system","update","Reply stopped by you. Any project work that had not started was cancelled.".into(),None,Some(event_id.into()),now());
             a.counters.event+=1;
-            a.events.push(PersonalEvent{id:format!("pe-{}",a.counters.event),request_id:request.into(),source:EventSource::Internal{what},received_at:now(),state:EventState::Done,attempts:0,error:None,spend_approved:false,computer_started:false,saved_reply:None});
+            a.events.push(PersonalEvent{id:format!("pe-{}",a.counters.event),request_id:request.into(),source:EventSource::Internal{what},received_at:now(),state:EventState::Done,attempts:0,error:None,spend_approved:false,computer_started:false, admin_started:false,saved_reply:None});
             Ok(())
         })?;
         if let Some(stop)=self.personal_stops.lock().unwrap().get(&format!("reply:{id}:{event_id}")){stop.notify_one();}

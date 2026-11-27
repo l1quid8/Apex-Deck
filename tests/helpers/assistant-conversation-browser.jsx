@@ -15,6 +15,11 @@ const receipt = { opId: 'bulk-op-1', phase: 'verified', exitCode: 0, outputExcer
 const failedReceipt = { ...receipt, phase: 'failed', exitCode: 1, outputExcerpt: 'Stopped: the deletion outcome is uncertain. No remaining threads were retried.\nCompleted IDs: one\nRemaining IDs: two' };
 const resultMessage = source => message('result', 'assistant', 'result', `room.deleteMany exited with ${source.exitCode}.\n\`\`\`\n${source.outputExcerpt}\n\`\`\``, 20, 'bulk');
 const fixtures = {
+  watch: {
+    messages: [message('risk', 'assistant', 'chat', 'Mac signing still needs its receipt. Ask Maya?', 10)],
+    tasks: [],
+    responsibilities: [{id:'installer', threadId:'qa', state:'watching', decision:{messageId:'risk', workerName:'Maya', status:'pending'}}],
+  },
   routine: {
     tasks: [{ ...base, status: 'done', decision: { ...decision, status: 'approved' }, receipts: [receipt] }, { ...base, id: 'running', status: 'running' }, { ...base, id: 'queued', status: 'queued' }],
     messages: [message('human', 'human', 'chat', 'Delete those two chats.', 1), message('ask', 'system', 'approval', prompt, 2, 'bulk'), message('allowed', 'system', 'update', 'Approved.', 3, 'bulk'), message('running', 'system', 'update', 'Running room.deleteMany without asking.', 4, 'running'), message('queued', 'system', 'update', 'Approved.', 5, 'queued'), message('followup', 'human', 'chat', 'What next?', 15), resultMessage(receipt)],
@@ -38,6 +43,7 @@ const laneFor = fixture => ({
   name: 'Alfred', hostName: 'This Mac', ref: { hostId: 'local', assistantId: 'alfred' }, offline: false,
   assistant: { id: 'alfred', hostId: 'local', name: 'Alfred', profile: null, allowedFolders: ['/project'], revision: 1, events: [{ id: 'request', requestId: 'human-request', state: 'done', receivedAt: 1 }], ...fixture },
   send: async () => {}, decide: async (...args) => window.calls.push(args), cancel: async () => {},
+  answerResponsibility: async (...args) => window.calls.push(args),
 });
 const floatState = () => ({ ...assistantFloatState({ lane: laneFor(current), ref: { hostId: 'local', assistantId: 'alfred' }, draft: '', error: '', alwaysOnTop: false, voice: { status: 'idle', muted: false } }), presentation: 'chat' });
 window.apexDeck = { popout: {

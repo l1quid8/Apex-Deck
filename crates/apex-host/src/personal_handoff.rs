@@ -358,6 +358,10 @@ mod tests {
             ..draft_for_missing(HandoffSlot::Workers)
         };
         let assistant = PersonalAssistant {
+            admin_trust: Default::default(),
+            admin_receipts: Vec::new(),
+            responsibilities: Vec::new(),
+            responsibility_draft: None,
             id: "asst-1".into(),
             host_id: "h".into(),
             name: "A".into(),
@@ -414,6 +418,10 @@ mod tests {
     fn routing_selection_is_revision_and_owner_bound() {
         let draft = draft_for_missing(HandoffSlot::Project);
         let assistant = PersonalAssistant {
+            admin_trust: Default::default(),
+            admin_receipts: Vec::new(),
+            responsibilities: Vec::new(),
+            responsibility_draft: None,
             id: "asst-1".into(),
             host_id: "h".into(),
             name: "A".into(),
@@ -490,6 +498,10 @@ mod tests {
     fn typed_worker_order_is_preserved() {
         let draft = draft_for_missing(HandoffSlot::Workers);
         let assistant = PersonalAssistant {
+            admin_trust: Default::default(),
+            admin_receipts: Vec::new(),
+            responsibilities: Vec::new(),
+            responsibility_draft: None,
             id: "asst-1".into(),
             host_id: "h".into(),
             name: "A".into(),
@@ -566,6 +578,10 @@ mod tests {
         // This test documents that applying a Project selection when missing is Workers fails.
         let draft = draft_for_missing(HandoffSlot::Workers);
         let assistant = PersonalAssistant {
+            admin_trust: Default::default(),
+            admin_receipts: Vec::new(),
+            responsibilities: Vec::new(),
+            responsibility_draft: None,
             id: "asst-1".into(),
             host_id: "h".into(),
             name: "A".into(),

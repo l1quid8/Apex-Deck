@@ -76,6 +76,12 @@ export type HandoffControlReceipt = { taskId: string; controlRevision: number; r
 export type HandoffQuestion = { questionId: string; questionRevision: number; runId: string; workerName: string; text: string; canContinue: boolean };
 
 export type PersonalAssistantRecord = PersonalSettings & {
+  responsibilities?: {
+    id: string; threadId: string; state: 'watching' | 'paused' | 'cancelled' | 'finished';
+    decision?: {messageId: string; workerName: string; status: 'pending' | 'wait' | 'requested'} | null;
+  }[];
+  adminTrust?: import('./generated/protocol').AdminTrustTier;
+  adminReceipts?: import('./generated/protocol').AdminReceipt[];
   legacy?: PersonalLegacyMarker;
   archivedAt?: number;
   id: string; hostId: string; allowedFolders: string[]; paused?: boolean; revision: number;
@@ -122,10 +128,13 @@ export type PersonalLane = {
   problem?: string;
   setUp?: () => Promise<void>;
   send(text: string): Promise<void>;
+  answerResponsibility?(messageId: string, text: string): Promise<void>;
   handoffSelect?(draft: PendingHandoff, selection: HandoffSelection): Promise<HandoffSelectReceipt>;
   handoffOptions?(draftId: string): Promise<HandoffOptions>;
   handoffQuestion?(taskId: string): Promise<HandoffQuestion | null>;
   handoffControl?(input: HandoffControlInput): Promise<HandoffControlReceipt>;
+  undoAdmin?(receiptId: string): Promise<unknown>;
+  setAdminTrust?(trust: import('./generated/protocol').AdminTrustTier): Promise<PersonalAssistantRecord>;
   /** Pull request cards under this conversation's recent replies. */
   shipOffers?(): Promise<{ offers: import("./replyDecision").ShipOffer[] }>;
   /** The card's Ship it tap, for the commit it showed. */
