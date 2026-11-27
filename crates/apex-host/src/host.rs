@@ -2495,10 +2495,12 @@ impl Host {
         self.require_idle(id)?;
         let before = room.options();
         let updated = change(before)?;
-        let mut snapshot = room.snapshot();
-        snapshot.options = updated;
-        self.commit_client_snapshot(id, &handle, &snapshot)?;
         room.set_options(updated);
+        // Snapshot the new policy and its derived responders together.
+        if let Err(error) = self.commit_client_snapshot(id, &handle, &room.snapshot()) {
+            room.set_options(before);
+            return Err(error);
+        }
         drop(room);
         self.room_event_for(id, &handle, RoomEvent::StateChanged);
         Ok(before)
