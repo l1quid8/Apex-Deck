@@ -121,6 +121,14 @@ test('imported assistant summaries retain the host legacy marker instead of look
  assert.equal(f.collection.snapshot().assistants.find(a=>a.ref.hostId==='beta').legacy,undefined);
 });
 
+test('phone creation checks the owner shown when setup opened before writing', async () => {
+ const f = fixture();
+ await f.collection.refresh();
+ f.routes.a.supports = cap => cap === 'assistant_workspace_v4';
+ await assert.rejects(f.collection.create('a', {}, 'previous-owner'), /identity changed/);
+ assert.equal(f.calls.some(([,cmd]) => cmd === 'personal_create'), false);
+});
+
 test('explicit creation persists on its captured authenticated machine and selects the returned durable owner',async()=>{
  const f=fixture();await f.collection.refresh();f.routes.a.supports=cap=>cap==='assistant_workspace_v4';
  const pending=defer();f.handlers['a:personal_create']=()=>pending.promise;

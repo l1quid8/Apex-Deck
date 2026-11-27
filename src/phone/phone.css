@@ -1567,3 +1567,15 @@
 .ph-app .apex-agent-all .assistant-composer-heading strong { min-width: 0; overflow-wrap: anywhere; }
 .ph-app .apex-agent-all .compact-actions.expanded > .apex-agent-reactions { flex-basis: 100%; }
 .ph-app .apex-agent-all .apex-agent-message-row.human .compact-actions.expanded > .apex-agent-reactions { justify-content: flex-end; }
+
+.ph-assistant-row { display: flex; align-items: stretch; }
+.ph-assistant-row > .ph-srow { flex: 1; min-width: 0; }
+.ph-assistant-settings { width: 44px; background: transparent; border: 0; color: inherit; }
+
+.ph-app .assistant-creation {
+  max-height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 16px);
+}
+.ph-app dialog.assistant-creation .assistant-editor .assistant-setting-row :is(input:not([type=checkbox]), select, textarea),
+.ph-app dialog.assistant-creation .assistant-editor textarea {
+  font-size: 16px;
+}

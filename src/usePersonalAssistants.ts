@@ -326,9 +326,10 @@ export class PersonalAssistantsCollection {
     if (settings.look && Object.keys(settings.look).some(key => key !== "color" && key !== "shape")) throw new Error("This host's legacy settings cannot save extended assistant appearance. Workspace configuration support is required.");
   }
   /** Captures the authenticated host before any creation await. Never follows selection. */
-  create = async (routeHostId: string, input: import('./AssistantWorkspace').AssistantCreation): Promise<AssistantRef> => {
+  create = async (routeHostId: string, input: import('./AssistantWorkspace').AssistantCreation, expectedHostId?: string): Promise<AssistantRef> => {
     if (this.options.offlineHost(routeHostId)) throw new Error("This machine is offline.");
     const route = this.options.hostBackend(routeHostId), hostId = this.owner(route);
+    if (expectedHostId != null && hostId !== expectedHostId) throw new Error("The machine identity changed. Reopen setup on the intended machine.");
     if (route.supports?.('assistant_workspace_v4') !== true) throw new Error("Update this machine’s service to create workspace assistants.");
     const assistant = await route.call<PersonalAssistantRecord>('personal_create', { ...input, look: { ...input.look } });
     if (this.options.hostBackend(routeHostId) !== route || this.owner(route) !== hostId) throw new Error("The machine identity changed during creation. Refresh this machine before continuing.");
