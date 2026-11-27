@@ -1386,13 +1386,10 @@ impl crate::Host {
             if let Some(image) = image {let look=assistant.look.get_or_insert_with(Look::default);look.kind=Some(crate::personal_workspace::AvatarKind::Image);look.image=Some(image);}
             if let Some(draft)=input.avatar_draft_id {assistant.costs.extend(self.avatar_creation_costs_locked(&draft)?);assistant.extra.insert("avatarCreationDraftId".into(),serde_json::Value::String(draft));}
             assistant.workspace_config_version=input.workspace_version;
-            // It introduces itself and says what it can do, the way Dot does.
             let intro = format!(
-                "Hi, I'm {name}. I live on this server, so I keep working when your phone and Mac are closed. \
-                 I can check on this machine, run something later or every so often until something happens, \
-                 keep an eye on things on a schedule, remember what you tell me, and send helpers to think something \
-                 through while we keep talking. Reading runs without asking; anything that changes things asks you first. \
-                 You can change that in Rules.",
+                "Hi, I'm {name}. I can follow an assigned thread and come back here when something needs you. \
+                 I can keep watching after you close Apex while my home machine is awake and its Apex service is running. \
+                 You can choose what I may do in Rules.",
                 name = assistant.name);
             assistant.post("assistant", "chat", intro, None, None, at);
             assistants.push(assistant.clone());
