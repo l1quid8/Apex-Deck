@@ -45,14 +45,14 @@ async fn standalone_profiles_survive_backend_restart_without_replacing_session_f
     let session=client.request("session_load",json!({})).await.unwrap();assert_eq!(session["future"]["preserve"],true);
 }
 impl Fixture {
+    fn binary() -> PathBuf {
+        std::env::var_os("APEX_DAEMON_BIN").map(PathBuf::from).unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_BIN_EXE_apex")).with_file_name("apex-daemon-fixture")
+        })
+    }
+
     fn start() -> Self {
-        let binary = std::env::current_exe()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("apex-daemon-fixture");
+        let binary = Self::binary();
         assert!(binary.is_file(),"Build fixture first: cargo build -p apex-daemon --features test-support --bin apex-daemon-fixture");
         let data = PathBuf::from("/tmp").join(format!("acl-{}", uuid::Uuid::new_v4().simple()));
         std::fs::create_dir_all(&data).unwrap();
@@ -71,13 +71,7 @@ impl Fixture {
     fn restart(&mut self) {
         self.child.kill().unwrap();
         self.child.wait().unwrap();
-        let binary = std::env::current_exe()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("apex-daemon-fixture");
+        let binary = Self::binary();
         let log = std::fs::OpenOptions::new()
             .append(true)
             .open(self.data.join("fixture.log"))
