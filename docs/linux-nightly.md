@@ -41,7 +41,7 @@ Run `sudo apex-deck-nightly-install rollback` to restore the previous healthy de
 
 #### First upgrade from an installer without an update command
 
-Use the **currently installed broker** to authenticate and stage the first updater-capable bundle. From an ordinary shell, set `bundle` to the extracted new installer directory. The protected temporary folder must be under a root-owned path.
+Use the **currently installed broker** to authenticate the first updater-capable bundle. Then use its authenticated new broker to stage the tree. This staging step can resume after an interruption. From an ordinary shell, set `bundle` to the extracted new installer directory. The protected temporary folder must be under a root-owned path.
 
 ```sh
 (
@@ -54,7 +54,9 @@ Use the **currently installed broker** to authenticate and stage the first updat
   for file in manifest.json manifest.sig payload.tar; do
     sudo install -m 0600 "$bundle/release/$file" "$work/$file"
   done
-  result=$(sudo "$current/resources/bin/apex-provenance" stage-linux-release "$work/manifest.json" "$work/manifest.sig" "$work/payload.tar")
+  sudo "$current/resources/bin/apex-provenance" verify-linux-release "$work/manifest.json" "$work/manifest.sig" "$work/payload.tar"
+  sudo tar -xf "$work/payload.tar" -C "$work" --no-same-owner resources/bin/apex-provenance
+  result=$(sudo "$work/resources/bin/apex-provenance" stage-linux-release "$work/manifest.json" "$work/manifest.sig" "$work/payload.tar")
   tree=${result#Staged verified payload: }
   sudo "$tree/resources/linux/apex-deck-install" update "$bundle"
 )
