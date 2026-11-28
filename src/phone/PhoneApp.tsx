@@ -53,7 +53,9 @@ import { SavedSteps, WorkSteps, InterruptedSteps } from "../WorkSteps.tsx";
 import { createStepsIndexLoader, dropStepsFrom, readReplySteps, rememberSteps, savedEntry } from "../workSteps.ts";
 import { PreparingCard } from "../interactiveAnswers/AnswerCard.tsx";
 import { CARD_LANGUAGE } from "../interactiveAnswers/contract.ts";
-import { cardVersions } from "../interactiveAnswers/share.ts";
+import { PhoneGeneratedCard } from "./PhoneGeneratedCard";
+import { nativeCards } from "./generatedCards";
+import { cardVersions, discussDraft, latestGeneratedCard } from "../interactiveAnswers/share.ts";
 import { ThreadCard } from "../interactiveAnswers/ThreadCard.tsx";
 import { QuestionForm } from "../QuestionForm";
 import { ReplyNextSteps } from "../ReplyNextSteps";
@@ -197,6 +199,8 @@ const COPIED_MS = 1500;
 type ShownThread = { id: string; hostId: string };
 type SavedStepsFor = { id: string; hostId: string; index: import("../types").StepsIndex | null };
 type Room = {
+  /** Authenticated connection that delivered this snapshot. Never inferred from a cached transcript. */
+  cardSession?: string;
   /** The room and the machine it came from: two machines can each have a room with the same id. */
   id: string; hostId: string; messages: Message[]; approvals: { id: string; request: string; action: import("../types").ProposedAction }[]; participants: Person[]; asks: ThreadAsks; plan: boolean; policy: TurnPolicy;
   /** Each bot's turn in progress, with its reply so far. */
@@ -990,6 +994,10 @@ export function PhoneApp() {
   const openKey = openPane ? threadKey(openPane, openHostId) : openId;
   const openPath = openPane?.executionPath ?? openWorkspace?.path ?? "";
   const openLink = linkOf(openHostId) ?? hostOf(openWorkspace);
+  const cardHost = phoneHost(openHostId);
+  const cardConnection = cardHost?.connection.get();
+  const cardSession = cardConnection?.status.kind === "connected"
+    ? JSON.stringify([cardConnection.status.hostId, cardConnection.seenAt, cardConnection.revision]) : undefined;
   const runnerBackend=phoneHost(openHostId)?.backend;
   const [runner,setRunner,runnerHostOffset]=useRunner(runnerBackend,openPane?.id??null);
   const [runnerMode,setRunnerMode]=useState<RunnerKind|null>(null);
@@ -1684,6 +1692,7 @@ export function PhoneApp() {
       setRoom({
         id: openPane.id,
         hostId: openHostId,
+        cardSession: state.live ? cardSession : undefined,
         messages: state.snapshot.transcript,
         approvals: state.approvals,
         participants: configs.map(toPerson),
@@ -1807,7 +1816,7 @@ export function PhoneApp() {
     return () => { live = false; if (retryTimer) clearTimeout(retryTimer); recovery.dispose(); stop(); refreshSteps.current = () => {}; retryThreadLoad.current = () => {}; };
     // Reloading follows the open thread and that machine's connection, not every keystroke.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [openPane?.id, openWorkspace?.id, openLink?.status, openHostId, openPath]);
+  }, [openPane?.id, openWorkspace?.id, openLink?.status, openHostId, openPath, cardSession]);
 
   // Who the message as typed goes to: its @names, or the bots named last when it has none.
   // Asked again as the draft changes and after each message, since a send can change it.
@@ -2729,6 +2738,9 @@ export function PhoneApp() {
   const started = Boolean(openPane && (openPane.assistantTaskId || (room && room.id === openPane.id ? room.messages.length : 0) > (openPane.fork?.at ?? 0) || openPane.activeAt));
   const inChat = tab === "threads" && openId !== null && (openPane !== null || viewingPending) && openWorkspace !== null && openLink !== null;
   const covered = chatSheet !== null || composerOpen || sheet !== null || menu !== null || ask !== null || browse !== null || botSheet !== null || pairing !== null || assistantWorkspaceId !== null || personalOpen || agentSheet !== null || worktreesOpen;
+  const cardHostId = openRoom && cardHost && cardConnection?.status.kind === "connected"
+    && !openChat?.movedTo && !openChat?.promotedTo && !openChat?.trashedAt && !openChat?.archived
+    ? JSON.stringify([isPaired(cardHost.machine) ? cardHost.machine.hostEndpointId : cardHost.machine.id, cardConnection.status.hostId]) : undefined;
   // Settings and Machines sit above a tab, so the tab they were opened from stays lit.
   const inMachinesFlow = tab === "machines" || tab === "machine" || tab === "computer" || tab === "app-permissions";
   const shownTab = inMachinesFlow ? machinesReturn.current : tab;
@@ -2918,6 +2930,9 @@ export function PhoneApp() {
             path={openPath}
             kind={openLink.kind}
             link={openLink}
+            cardHostId={cardHostId}
+            cardSessionFresh={Boolean(cardSession && openRoom?.cardSession === cardSession && !openRoom.stale)}
+            cardEpoch={cardSession ?? ""}
             hostIcon={machineIcon(openLink.id, 15)}
             started={started}
             messages={openRoom ? openRoom.messages : []}
@@ -4066,6 +4081,7 @@ function ThreadView(props: {
   /** Look A's strip above the compose row, and look C's capsule under the title. Each draws only in its look. */
   callStrip?: ReactNode; callCapsule?: ReactNode;
   title: string; draftThread: boolean; project: string; machine: string; path: string; kind: MachineKind; link: LinkView;
+  cardHostId?: string; cardEpoch: string; cardSessionFresh: boolean;
   hostIcon: ReactNode; started: boolean; covered: boolean;
   messages: Message[]; approvals: { id: string; request: string; action: import("../types").ProposedAction }[];
   /** The thread hasn't arrived yet: on its way (slow past 10 s), or failed with why and being tried again. Null once it is here. */
@@ -4165,6 +4181,7 @@ function ThreadView(props: {
   const pill = usePillPress(JSON.stringify([props.link.id, props.paneId]));
   // Comparison settings stay read-only here. Built-in controls use local component state.
   const versions = useMemo(() => cardVersions(props.messages), [props.messages]);
+  const generatedCandidate = useMemo(() => latestGeneratedCard(props.messages), [props.messages]);
   // One stable reader per sender, so a picture isn't read again on every render.
   const pictureReaders = useMemo(() => new Map<string, (path: string) => Promise<ArrayBuffer>>(), [props.pictures.read]);
   const readPicture = (by: string | null) => {
@@ -4598,11 +4615,20 @@ function ThreadView(props: {
               {by(message.speaker.id)}
               {message.lateReplyFrom && <p className="late-reply-label">Late reply from {message.lateReplyFrom}</p>}
               {(() => {
-                const renderText = (text: string) => <div className="ph-md"><Markdown text={text} onOpen={(target) => { if (/^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} fence={(code) => (code.language === CARD_LANGUAGE
-                ? <ThreadCard threadId={props.paneId} hostId={props.link.id} source={code.text} seq={message.seq} author={message.speaker.kind === "bot" ? person(message.speaker.id).display_name : "Human"} versions={versions} answers={null} readOnly onOpen={(target) => { if (/^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} />
+                const renderText = (text: string, final = false) => <div className="ph-md"><Markdown text={text} onOpen={(target) => { if (/^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} fence={(code) => (code.language === CARD_LANGUAGE
+                ? <ThreadCard threadId={props.paneId} hostId={props.link.id} source={code.text} seq={message.seq} author={message.speaker.kind === "bot" ? person(message.speaker.id).display_name : "Human"} versions={versions} answers={null} readOnly autoStartKey={generatedCandidate?.key}
+                  renderGenerated={final && generatedCandidate?.source === code.text && nativeCards && props.cardHostId && !props.load?.failed && (props.cardSessionFresh || props.stale || props.load) ? (card, version) =>
+                    <PhoneGeneratedCard key={JSON.stringify([props.link.id, props.paneId, message.seq, code.text, props.cardEpoch])}
+                      hostId={props.covered || !props.cardSessionFresh ? undefined : props.cardHostId} threadId={props.paneId}
+                      messageId={JSON.stringify([message.origin ?? null, message.originSeq ?? message.seq, message.at ?? null, message.speaker])} card={card}
+                      onDiscuss={snapshot => {
+                        const author = message.speaker.kind === "bot" ? person(message.speaker.id).display_name : "";
+                        props.onDraft(discussDraft(props.draft.text, `From ${author}'s interface "${card.title}" (v${version}):\n${snapshot}`));
+                        inputRef.current?.focus();
+                      }} /> : undefined} onOpen={(target) => { if (/^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} />
                 : undefined)} /></div>;
                 const saved = savedEntry(props.stepsIndex, message.seq);
-                return saved ? <SavedSteps key={`${props.link.id}:${props.paneId}:${message.seq}`} count={saved.count} todoCount={saved.todo_count} todoCompleted={saved.todo_completed} cached={props.loadedSteps.get(message.seq) ?? null} load={() => props.loadSteps(message.seq)} finalText={visibleReply(message.text)} renderText={renderText} /> : renderText(visibleReply(message.text));
+                return saved ? <SavedSteps key={`${props.link.id}:${props.paneId}:${message.seq}`} count={saved.count} todoCount={saved.todo_count} todoCompleted={saved.todo_completed} cached={props.loadedSteps.get(message.seq) ?? null} load={() => props.loadSteps(message.seq)} finalText={visibleReply(message.text)} renderText={renderText} renderFinalText={generatedCandidate && message.text.includes(generatedCandidate.source) ? text => renderText(text, true) : undefined} /> : renderText(visibleReply(message.text), true);
               })()}
               <PhonePictures paths={replyImages(message.text)} read={readPicture(person(message.speaker.id).display_name)} blocked={props.pictures.blocked} />
               {!foldedDecision && message.seq === decisionSeq && decisionCard}

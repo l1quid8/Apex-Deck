@@ -19,9 +19,9 @@ export function clampReportedHeight(height) {
 }
 
 // This fixed script contains no model bytes. It runs before any card markup.
-const CHILD_BOOTSTRAP_JS = String.raw`(() => {
+const childBootstrap = (webKit) => String.raw`(() => {
   const normalizeWidgetState = ${normalizeWidgetState.toString()};
-  "use strict";
+  "use strict";${webKit ? 'if (window.__apexWidgetGuardsReady !== true) return;' : ''}
   // Chromium exposes one unlabeled entry for each present media-device kind
   // even when its native permission checks deny device operations. Remove the
   // native getter before any model bytes and seal both same-realm paths. The
@@ -171,21 +171,36 @@ const CHILD_BOOTSTRAP_JS = String.raw`(() => {
     return json;
   }
   let widgetSaveTimer = null;
-  const deferStateSave = window.setTimeout.bind(window);
+  const deferStateSave = window.setTimeout.bind(window);${webKit ? `
+  const saveClock = performance.now.bind(performance);
+  let lastSave = -Infinity;
+  function reportWebKitState() {
+    lastSave = saveClock();
+    emit("widget-state", { widgetState });
+  }
+  function scheduleWebKitState() {
+    if (widgetSaveTimer !== null) return;
+    const delay = 100 - (saveClock() - lastSave);
+    if (delay <= 0) reportWebKitState();
+    else widgetSaveTimer = deferStateSave(() => {
+      widgetSaveTimer = null;
+      reportWebKitState();
+    }, delay);
+  }` : ''}
   Object.defineProperty(window, "generatedUI", { configurable: false, writable: false, value: Object.freeze({
     get widgetState() { return parseStateJSON(snapshotJSON); },
-    get snapshotJSON() { return snapshotJSON; },
+    get snapshotJSON() { return snapshotJSON; },${webKit ? '\n    get editedSnapshotJSON() { return lastSave === -Infinity ? null : snapshotJSON; },' : ''}
     setWidgetState(value) {
       if (!initialized) throw new Error("The interface is not initialized");
       const json = prepareState(value);
       widgetState = parseStateJSON(json);
-      snapshotJSON = json;
+      snapshotJSON = json;${webKit ? '\n      scheduleWebKitState();' : `
       // Sliders may update at display rate. Keep the local API synchronous,
       // but coalesce host writes so normal dragging cannot trip flood guards.
       if (widgetSaveTimer === null) widgetSaveTimer = deferStateSave(() => {
         widgetSaveTimer = null;
         emit("widget-state", { widgetState });
-      }, 100);
+      }, 100);` }
     },
     discuss(text) { if (initializationComplete && typeof text === "string" && text.trim() && text.length <= 4000) emit("discuss", { text }); }
   }) });
@@ -236,16 +251,16 @@ const CHILD_BOOTSTRAP_JS = String.raw`(() => {
 })();`;
 
 /** Adapted buildFinalFrameContent: fixed head first, audited theme, fixed body/bootstrap. */
-function buildFinalFrameContent() {
-  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${CHILD_CSP}"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${DESIGN_SYSTEM_CSS}</style></head><body><script>${CHILD_BOOTSTRAP_JS}</script></body></html>`;
+function buildFinalFrameContent(webKit) {
+  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${CHILD_CSP}"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${DESIGN_SYSTEM_CSS}</style></head><body><script>${childBootstrap(webKit)}</script></body></html>`;
 }
 
 /** Trusted wrapper bytes only. Payloads enter the child through structured messages. */
-export function buildWrapperDocument({ runId, revisionDigest }) {
+export function buildWrapperDocument({ runId, revisionDigest }, { webKit = false } = {}) {
   if (typeof runId !== "string" || !/^[a-zA-Z0-9_-]{1,100}$/.test(runId) || typeof revisionDigest !== "string" || !/^[a-f0-9]{64}$/.test(revisionDigest)) throw new TypeError("Invalid generated UI run binding");
   const binding = JSON.stringify({ protocolVersion: 1, runId, revisionDigest });
-  const fixedChild = JSON.stringify(buildFinalFrameContent()).replace(/</g, "\\u003c");
-  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${WRAPPER_CSP}"><style>html,body{margin:0;height:100%;overflow:hidden;background:#090d12}iframe{width:100%;height:100%;border:0;background:transparent}</style></head><body><iframe id="generated-frame" sandbox="allow-scripts" connectionallowlist="()" referrerpolicy="no-referrer" allow="camera 'none'; microphone 'none'; geolocation 'none'; clipboard-read 'none'; clipboard-write 'none'; display-capture 'none'; usb 'none'; serial 'none'; hid 'none'; bluetooth 'none'; payment 'none'; fullscreen 'none'; web-share 'none'; local-fonts 'none'; screen-wake-lock 'none'; storage-access 'none'"></iframe><script>(() => {
+  const fixedChild = JSON.stringify(buildFinalFrameContent(webKit)).replace(/</g, "\\u003c");
+  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${WRAPPER_CSP}">${webKit ? '<meta name="viewport" content="width=device-width,initial-scale=1">' : ''}<style>html,body{margin:0;height:100%;overflow:hidden;background:#090d12}iframe{width:100%;height:100%;border:0;background:transparent}</style></head><body><iframe id="generated-frame" sandbox="allow-scripts" connectionallowlist="()" referrerpolicy="no-referrer" allow="camera 'none'; microphone 'none'; geolocation 'none'; clipboard-read 'none'; clipboard-write 'none'; display-capture 'none'; usb 'none'; serial 'none'; hid 'none'; bluetooth 'none'; payment 'none'; fullscreen 'none'; web-share 'none'; local-fonts 'none'; screen-wake-lock 'none'; storage-access 'none'"></iframe><script>(() => {
   "use strict";
   const binding = ${binding};
   const frame = document.getElementById("generated-frame");

@@ -18,7 +18,7 @@ export function cardVersions(messages: { seq: number; speaker: { kind: string };
   const versions = new Map<string, number>();
   for (const message of messages) {
     if (message.speaker.kind !== "bot" || !message.text.includes(CARD_LANGUAGE)) continue;
-    for (const block of parseBlocks(message.text)) {
+    for (const block of parseBlocks(message.text, { closedFencesOnly: true })) {
       if (block.kind !== "code" || block.language !== CARD_LANGUAGE) continue;
       const read = readCard(block.text);
       if (!read.ok) continue;
@@ -30,23 +30,29 @@ export function cardVersions(messages: { seq: number; speaker: { kind: string };
   return versions;
 }
 
-/** One automatic candidate per thread, so native cards never replace each other in a loop. */
-export function latestGeneratedCardKey(messages: { seq: number; speaker: { kind: string }; text: string }[]): string | null {
-  let latest: string | null = null;
+type CardMessage = { seq: number; speaker: { kind: string }; text: string };
+
+/** One automatic candidate per thread, bound to the exact completed fence. */
+export function latestGeneratedCard(messages: CardMessage[]): { key: string; source: string } | null {
+  let latest: { key: string; source: string } | null = null;
   const count = new Map<string, number>();
   for (const message of messages) {
     if (message.speaker.kind !== "bot" || !message.text.includes(CARD_LANGUAGE)) continue;
-    for (const block of parseBlocks(message.text)) {
+    for (const block of parseBlocks(message.text, { closedFencesOnly: true })) {
       if (block.kind !== "code" || block.language !== CARD_LANGUAGE) continue;
       const read = readCard(block.text);
       if (read.ok && read.card.kind === "generated") {
-        latest = cardKey(message.seq, read.card.cardId);
-        count.set(latest, (count.get(latest) ?? 0) + 1);
+        latest = { key: cardKey(message.seq, read.card.cardId), source: block.text };
+        count.set(latest.key, (count.get(latest.key) ?? 0) + 1);
       }
     }
   }
   // Repeated identities in one reply cannot nominate two automatic hosts.
-  return latest && count.get(latest) === 1 ? latest : null;
+  return latest && count.get(latest.key) === 1 ? latest : null;
+}
+
+export function latestGeneratedCardKey(messages: CardMessage[]): string | null {
+  return latestGeneratedCard(messages)?.key ?? null;
 }
 
 /** The result line, then which options are out and why. */

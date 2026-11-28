@@ -18,6 +18,10 @@ test('only the newest valid generated bot card is chosen for automatic opening',
   const messages=[bot(1,card),bot(2,{...card,cardId:'second'}),{seq:3,speaker:{kind:'human'},text:fence(card)},bot(4,{...card,extra:true}),{seq:5,speaker:{kind:'bot'},text:'```apex-ui\n'+comparisonVariant(()=>{})+'\n```'}];
   assert.equal(share.latestGeneratedCardKey(messages),'2:second');
   assert.equal(share.latestGeneratedCardKey([]),null);
+  const counter = JSON.parse(readFileSync(new URL("./fixtures/generated-persistence-counter.json", import.meta.url), "utf8"));
+  const complete = bot(6, counter);
+  assert.equal(share.latestGeneratedCard([complete]).source, JSON.stringify(counter));
+  assert.equal(share.latestGeneratedCard([{...complete, text:complete.text.slice(0,-3)}]), null);
   assert.equal(share.latestGeneratedCardKey([{seq:1,speaker:{kind:'bot'},text:fence(card)+'\n'+fence({...card,cardId:'last'})}]),'1:last');
   assert.equal(share.latestGeneratedCardKey([{seq:1,speaker:{kind:'bot'},text:fence(card)+'\n'+fence({...card,title:'Duplicate identity'})}]),null);
 });

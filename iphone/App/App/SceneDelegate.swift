@@ -12,6 +12,7 @@ class AppBridgeViewController: CAPBridgeViewController {
         bridge?.registerPluginInstance(ApexAppearancePlugin())
         bridge?.registerPluginInstance(ApexAppInfoPlugin())
         bridge?.registerPluginInstance(AppLockPlugin())
+        bridge?.registerPluginInstance(ApexGeneratedCardsPlugin())
     }
 }
 

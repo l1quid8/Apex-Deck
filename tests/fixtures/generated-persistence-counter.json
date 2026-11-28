@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "kind": "generated",
+  "cardId": "persistence-smoke-test",
+  "title": "Intelligent UI test",
+  "summary": "Test button interaction and saved state.",
+  "html": "<div class=\"counter\"><button id=\"minus\" type=\"button\" aria-label=\"Decrease count\">−</button><output id=\"count\" aria-live=\"polite\">0</output><button id=\"plus\" type=\"button\" aria-label=\"Increase count\">+</button></div><button id=\"reset\" type=\"button\">Reset</button><p id=\"status\" role=\"status\"></p><p class=\"hint\">Count range: 0–99. Increase it, scroll away and back, then reload or reopen Deck. The same count should return.</p>",
+  "css": ".counter{display:flex;align-items:center;justify-content:center;gap:24px;padding:24px 0}.counter button{min-width:48px;min-height:48px;font-size:24px}#count{font:500 56px var(--font-mono);min-width:2ch;text-align:center}#reset{display:block;margin:0 auto;min-height:44px}.hint,#status{text-align:center;color:var(--color-text-secondary);line-height:1.5}button:focus-visible{outline:3px solid var(--color-text-info);outline-offset:4px}",
+  "js": "const out=document.getElementById('count');const status=document.getElementById('status');const minus=document.getElementById('minus');const plus=document.getElementById('plus');const bridge=window.generatedUI;const saved=bridge?.widgetState;let count=Number.isInteger(saved?.count)&&saved.count>=0&&saved.count<=99?saved.count:0;function render(){out.textContent=String(count);minus.disabled=count===0;plus.disabled=count===99;}function save(){render();try{if(typeof bridge?.setWidgetState!=='function')throw new Error('Unavailable');bridge.setWidgetState({count});status.textContent='Save requested. Scroll away or reload to check restoration.';}catch{status.textContent='Saving is unavailable or failed. The buttons still work for this session.';}}minus.onclick=()=>{count=Math.max(0,count-1);save();};plus.onclick=()=>{count=Math.min(99,count+1);save();};document.getElementById('reset').onclick=()=>{count=0;save();};render();status.textContent=saved&&Number.isInteger(saved.count)&&saved.count>=0&&saved.count<=99?'Restored saved count: '+count+'.':'Ready. Change the count to test saving.';",
+  "fallback": "Desktop persistence test: text fallback."
+}
