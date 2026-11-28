@@ -328,6 +328,22 @@ fn listed(required: &[&str]) -> Github {
 }
 
 #[tokio::test]
+async fn relayed_approval_cannot_follow_a_replacement_pull_after_restart() {
+    let f = Fixture::new();
+    let key = f.reviewed_key();
+    f.store.admit_relay("r", &key, true, (41, "alfred")).unwrap();
+    let restarted = ThreadGit::new(f.data.path());
+    let remote = listed(&["Windows"]); // This branch and head now identify PR 42.
+    f.tick(&restarted, &remote).await;
+    f.tick(&restarted, &remote).await;
+    let workflow = restarted.get("r").unwrap().unwrap();
+    assert_eq!(workflow.pr, Some(41));
+    assert!(!workflow.pending());
+    assert_eq!(remote.creates.load(Ordering::SeqCst), 0);
+    assert_eq!(remote.puts.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
 async fn the_probe_reads_github_and_changes_nothing() {
     let f = Fixture::new();
     f.reviewed();
@@ -659,6 +675,7 @@ async fn an_unrelated_local_edit_does_not_stop_the_update() {
     assert_eq!(std::fs::read_to_string(m.join("src/x.rs")).unwrap(), "fixed\n");
     assert_eq!(mac.git(&["status", "--porcelain"]), before, "every local edit is still there");
     assert_eq!(mac.store.get("r").unwrap().unwrap().phase, Phase::Merged);
+    assert_eq!(mac.store.get("r").unwrap().unwrap().kept_edits, before.lines().count(), "the note can say how many were kept");
     assert_eq!(mac.sync_from(&syncing).await, Ok(false), "a second, stale sync changes nothing");
 }
 

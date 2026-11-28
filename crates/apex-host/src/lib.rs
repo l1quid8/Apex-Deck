@@ -89,6 +89,7 @@ pub use apex_core::{ClientCapabilities, GeneratedUiCapability};
 
 mod next_steps;
 pub mod reply_suggestions;
+pub mod ship_relay;
 mod step_buffers;
 
 pub mod bot_copies_ui;

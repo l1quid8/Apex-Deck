@@ -161,6 +161,14 @@ pub struct Workflow {
     /// if they no longer do, the merge stops and nothing waits.
     #[serde(default)]
     ready_only: bool,
+    /// Files with local changes in the Mac's main folder that the update after
+    /// the merge left as they were.
+    #[serde(default)]
+    pub kept_edits: usize,
+    /// The assistant the person told to ship this commit's pull request, for
+    /// the merge now asked for. Its conversation hears how the merge ended.
+    #[serde(default)]
+    pub relayed_by: Option<String>,
 }
 
 /// What GitHub says about the reviewed commit before any merge is asked for.
@@ -173,6 +181,31 @@ pub enum Checks {
     Failed { pr: u64, detail: String },
 }
 impl Workflow {
+    /// A merge request not saved anywhere: what one for this commit would be.
+    pub(crate) fn draft(root: String, branch: String, repo: String, head: String, builder: String) -> Self {
+        Self {
+            root,
+            branch,
+            repo,
+            head,
+            builder,
+            builder_model: String::new(),
+            reviewer: None,
+            phase: Phase::Ready,
+            generation: 0,
+            pr: None,
+            detail: "Waiting for checks".into(),
+            result_oid: None,
+            pushed: false,
+            fix_requested: false,
+            local_check_failed: false,
+            close_pending: false,
+            close_since: None,
+            ready_only: false,
+            kept_edits: 0,
+            relayed_by: None,
+        }
+    }
     pub(crate) fn pending(&self) -> bool {
         matches!(
             self.phase,
@@ -188,14 +221,17 @@ impl Workflow {
             && self.root == state.root
             && state.branch.as_ref() == Some(&self.branch)
     }
-    fn request(&mut self) -> Result<(), String> {
+    /// `retry`: the caller has just seen this commit checked out and GitHub
+    /// ready for it, so a merge that was refused earlier may be asked again.
+    fn request(&mut self, retry: bool) -> Result<(), String> {
         if self.pending() || self.phase == Phase::Merged {
             return Ok(());
         }
-        if !matches!(self.phase, Phase::Ready | Phase::Cancelled) {
+        if !(matches!(self.phase, Phase::Ready | Phase::Cancelled) || (retry && (self.phase == Phase::Blocked || (self.phase == Phase::Failed && !self.local_check_failed)))) {
             return Err(self.detail.clone());
         }
         self.generation += 1;
+        self.relayed_by = None;
         self.phase = Phase::Preparing;
         self.local_check_failed = false;
         self.detail = "Publishing the commit…".into();
@@ -401,6 +437,8 @@ impl ThreadGit {
                         close_pending: false,
                         close_since: None,
                         ready_only: false,
+                        kept_edits: 0,
+                        relayed_by: None,
                     },
                 );
             } else if same {
@@ -416,13 +454,21 @@ impl ThreadGit {
     }
     /// From the thread folder's Git panel.
     pub fn admit(&self, room: &str, expected: &WorkflowKey) -> Result<String, String> {
-        self.admit_with(room, expected, false)
+        self.admit_with(room, expected, false, false, None)
     }
     /// A merge asked for from the decision card, after its checks passed.
     pub fn admit_ready(&self, room: &str, expected: &WorkflowKey) -> Result<String, String> {
-        self.admit_with(room, expected, true)
+        self.admit_with(room, expected, true, true, None)
     }
-    fn admit_with(&self, room: &str, expected: &WorkflowKey, ready_only: bool) -> Result<String, String> {
+    /// A merge asked for from the decision card while its checks were still
+    /// running, with nothing else in the way: it waits for them.
+    pub fn admit_waiting(&self, room: &str, expected: &WorkflowKey) -> Result<String, String> {
+        self.admit_with(room, expected, false, true, None)
+    }
+    pub(crate) fn admit_relay(&self, room: &str, expected: &WorkflowKey, ready_only: bool, relay: (u64, &str)) -> Result<String, String> {
+        self.admit_with(room, expected, ready_only, true, Some(relay))
+    }
+    fn admit_with(&self, room: &str, expected: &WorkflowKey, ready_only: bool, retry: bool, relay: Option<(u64, &str)>) -> Result<String, String> {
         self.edit(|rooms| {
             let w = rooms
                 .get_mut(room)
@@ -434,8 +480,17 @@ impl ThreadGit {
             if w.generation != expected.generation && !w.pending() && w.phase != Phase::Merged {
                 return Err("Refresh the current branch before merging.".into());
             }
+            if let Some((pr, _)) = relay {
+                if w.pr.is_some_and(|saved| saved != pr) || (w.pending() && w.pr != Some(pr)) {
+                    return Err("The pull request changed. Refresh the card.".into());
+                }
+            }
             let before = w.generation;
-            w.request()?;
+            w.request(retry)?;
+            if let Some((pr, assistant)) = relay {
+                w.pr = Some(pr);
+                w.relayed_by = Some(assistant.to_owned());
+            }
             if w.generation != before {
                 w.ready_only = ready_only;
             }
@@ -451,7 +506,7 @@ impl ThreadGit {
                 .filter(|w| w.head == sha && w.builder == builder)
                 .ok_or("The shipped commit is no longer this thread's merge request.")?;
             let before = w.generation;
-            w.request()?;
+            w.request(false)?;
             if w.generation != before {
                 w.ready_only = false;
             }
@@ -479,6 +534,10 @@ impl ThreadGit {
             }
             Ok(CancelOutcome { detail: w.detail.clone(), cancelled, pr: w.pr })
         })
+    }
+    /// Every thread whose merge request is for this branch of this repository.
+    pub fn find(&self, repo: &str, branch: &str) -> Result<Vec<(String, Workflow)>, String> {
+        self.edit(|rooms| Ok(rooms.iter().filter(|(_, w)| w.repo == repo && w.branch == branch).map(|(room, w)| (room.clone(), w.clone())).collect()))
     }
     #[cfg(test)]
     pub(crate) fn put(&self, room: &str, w: Workflow) -> Result<(), String> {
@@ -558,6 +617,8 @@ mod github;
 pub(crate) mod ship;
 pub use github::checks;
 pub(crate) use github::{find_pr, observe_pr};
+pub use github::preflight::{Light, Line, Readiness};
+pub use github::readiness;
 #[cfg(test)]
 pub(crate) use github::fake_checks;
 #[cfg(test)]

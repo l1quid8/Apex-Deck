@@ -219,3 +219,17 @@ test('handoff commands require capability and retain the authenticated assistant
  assert.equal(call[0],'a');assert.equal(call[2].assistantId,'asst-1');assert.equal(call[2].expectedTaskRevision,4);
  assert.equal(f.collection.snapshot().selected.hostId,'beta');
 });
+
+test('pull request cards and Ship it reach only a service that supports them, addressed to the lane’s assistant',async()=>{
+ const old=fixture();await old.collection.refresh();old.collection.select(ref('alpha'));const plain=old.collection.lane(ref('alpha'));
+ assert.equal(plain.shipOffers,undefined);assert.equal(plain.ship,undefined);assert.equal(plain.cancelShip,undefined);
+ const f=fixture();f.routes.a.supports=cap=>cap==='assistant_ship_v1';await f.collection.refresh();f.collection.select(ref('alpha'));const lane=f.collection.lane(ref('alpha'));
+ const sent=[];const head='a'.repeat(40);const expected={repo:'example/deck',branch:'fix/alert',root:'/repo',generation:1,head};
+ f.handlers['a:personal_ship_offers']=args=>{sent.push(['offers',args]);return {offers:[{pr:84,messageId:'pm-1',state:'ready'}]};};
+ f.handlers['a:personal_ship']=args=>{sent.push(['ship',args]);return {message:'Deck is merging PR #84.'};};
+ f.handlers['a:room_thread_git_action']=args=>{sent.push(['cancel',args]);return {message:'Confirming cancellation with GitHub…'};};
+ assert.deepEqual((await lane.shipOffers()).offers.map(offer=>offer.pr),[84]);
+ assert.equal((await lane.ship(84,head,expected.repo)).message,'Deck is merging PR #84.');
+ assert.equal((await lane.cancelShip('r',expected)).message,'Confirming cancellation with GitHub…');
+ assert.deepEqual(sent,[['offers',{assistantId:'asst-1'}],['ship',{assistantId:'asst-1',pr:84,head,repo:expected.repo}],['cancel',{id:'r',action:{kind:'cancel_merge',expected}}]]);
+});

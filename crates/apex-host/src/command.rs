@@ -189,6 +189,10 @@ pub enum Command {
     RoomGitStatus { id: String },
     RoomReplyDecision { id: String },
     RoomReplyDecisionDismiss { id: String, key: String },
+    /// Pull request cards under an assistant's recent replies.
+    PersonalShipOffers { assistant_id: String },
+    /// The Ship it tap on such a card, for the commit it showed.
+    PersonalShip { assistant_id: String, pr: u64, repo: String, head: String },
     RoomThreadGitAction { id: String, action: crate::thread_git::ThreadGitAction },
     RoomGitAction { id: String, action: crate::git_changes::Action },
     RoomFork { source: String, target: String, upto: Option<usize> },
@@ -388,7 +392,7 @@ impl Command {
             | PersonalConfigure { .. } | PersonalPermissionSet { .. } | PersonalRuleAdd { .. } | PersonalRuleRemove { .. } | PersonalMemoryAdd { .. }
             | PersonalMemoryCorrect { .. } | PersonalMemoryForget { .. } | PersonalMachineLink { .. } | PersonalMachineUnlink { .. } | PersonalMachineClaim { .. }
             | PersonalMachineAllow { .. } | PersonalBrowserSession { .. } | ComputerSetup { .. } | ComputerSetEnabled { .. } | ComputerSetAppPrompts { .. } | ComputerSetActionLabels { .. }
-            | RoomThreadGitAction { .. } | RoomFork { .. } | RoomMount { .. } | ChatPromote { .. } | RoomForgetAllowed { .. } => Policy::PROTECTED,
+            | RoomThreadGitAction { .. } | PersonalShip { .. } | RoomFork { .. } | RoomMount { .. } | ChatPromote { .. } | RoomForgetAllowed { .. } => Policy::PROTECTED,
             // Search returns text from every thread, so opening it needs the
             // same proof as acting for the person. It is not on the terminal
             // surface: a same-user socket peer on Linux (SSH, the terminal
@@ -408,7 +412,7 @@ impl Command {
             // Artifacts
             ArtifactsLoad { .. } | ArtifactsSave { .. } | AnswersLoad { .. } | AnswerSave { .. } | ArtifactExport { .. } => Policy::OPEN,
             // Room
-            RoomSteps { .. } | RoomDelete { .. } | ListToolServers { .. } | RoomDiff { .. } | RoomGitStatus { .. } | RoomGitAction { .. } | RoomState { .. } | RoomReplyDecision { .. } | RoomReplyDecisionDismiss { .. }
+            RoomSteps { .. } | RoomDelete { .. } | ListToolServers { .. } | RoomDiff { .. } | RoomGitStatus { .. } | RoomGitAction { .. } | RoomState { .. } | RoomReplyDecision { .. } | RoomReplyDecisionDismiss { .. } | PersonalShipOffers { .. }
             | RoomTargets { .. } | RoomRefreshPlans { .. } | RoomApplyAccess { .. } | RoomPostTo { .. } | PostCapabilities { .. } | VoiceCapabilities { .. }
             | RoomStopRequest { .. } | RoomTurn { .. } | RoomStop { .. } | RoomClear { .. } | RoomRewind { .. } | RoomRevertPlan { .. } | RoomRevert { .. }
             | RoomPin { .. } | RoomUnpin { .. } | RoomCompact { .. } | RoomCurate { .. } | RoomCurateUndo { .. } | RoomClose { .. } | RoomBotModels { .. }
@@ -795,7 +799,12 @@ impl Host {
             PersonalProjectDelegate { input } => reply(self.personal_project_delegate(input).await?),
             PersonalProjectDelegateUi { input } => reply(self.personal_project_delegate_ui(input)?),
             PersonalProjectProposeUi { input } => reply(self.personal_project_propose_ui(input)?),
-            PersonalSend { assistant_id, request_id, text, view_context } => reply(self.personal_send_with_context(&assistant_id, &request_id, &text, view_context)?),
+            PersonalSend { assistant_id, request_id, text, view_context } => {
+                let accepted = self.personal_send_with_context(&assistant_id, &request_id, &text, view_context)?;
+                // "Ship PR 84" in the person's own message is Deck's to act on, once.
+                if !accepted.duplicate { self.relay_ship_later(&assistant_id, &accepted.event_id, &text); }
+                reply(accepted)
+            }
             PersonalReact { assistant_id, message_id, emoji, enabled } => {
                 let a = self.personal_react(&assistant_id, &message_id, &emoji, enabled)?;
                 reply(serde_json::json!({"assistant": crate::personal::PersonalAssistantView::from(&a)}))
@@ -957,6 +966,8 @@ impl Host {
             RoomGitStatus { id } => reply(self.room_git_status(id).await?),
             RoomReplyDecision { id } => reply(self.room_reply_decision(id).await?),
             RoomReplyDecisionDismiss { id, key } => reply(self.room_reply_decision_dismiss(id, key)?),
+            PersonalShipOffers { assistant_id } => reply(self.personal_ship_offers(assistant_id).await?),
+            PersonalShip { assistant_id, pr, repo, head } => reply(self.personal_ship(assistant_id, pr, repo, head).await?),
             RoomThreadGitAction { id, action } => reply(self.room_thread_git_action(id, action).await?),
             RoomGitAction { id, action } => reply(self.room_git_action(id, action).await?),
             RoomFork { source, target, upto } => reply(self.room_fork(source, target, upto)?),
@@ -1441,7 +1452,7 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 254);
+        assert_eq!(names.len(), 256);
         for name in [
             "session_save_layout",
             "search_open",
