@@ -215,6 +215,12 @@ impl Activation {
     pub fn phase(&self) -> Phase {
         self.phase
     }
+    #[cfg(target_os = "linux")]
+    pub(crate) fn ready_selection(&self) -> Result<Option<&Descriptor>, String> {
+        self.validate()?;
+        if self.phase != Phase::Ready { return Err("Interrupted installation requires recovery".into()); }
+        Ok(self.active.as_ref())
+    }
     pub fn admitted(&self) -> Result<&Descriptor, String> {
         self.validate()?;
         if self.phase != Phase::Ready {

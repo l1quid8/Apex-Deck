@@ -18,6 +18,7 @@ on:
       - scripts/package-linux*.mjs
       - scripts/seal-linux-installer.mjs
       - tests/seal-linux-installer.test.mjs
+      - tests/linux-nightly-fetch.py
       - desktop/linuxService.mjs
       - desktop/trustedInstall.mjs
       - crates/apex-provenance/**
@@ -64,6 +65,7 @@ jobs:
           sudo apt-get install -y libgtk-3-0t64 libnss3 libasound2t64 libgbm1 xvfb x11-utils x11-apps xdotool openbox bubblewrap \
             at-spi2-core python3-pyatspi gir1.2-atspi-2.0 dbus-user-session expect desktop-file-utils
       - run: npm ci
+      - run: python3 -B tests/linux-nightly-fetch.py
       - run: node --test tests/package-linux-installer.test.mjs tests/seal-linux-installer.test.mjs tests/package-linux.test.mjs tests/desktop-linux-saves.test.mjs
       - name: Build the Nightly AppImage and its unpacked tree
         run: npm run desktop:linux
@@ -78,7 +80,7 @@ jobs:
             --features linux-evaluation-verifier --target-dir target-evaluation
           strip target-evaluation/release/apex-provenance
           echo "EVALUATION_KEY=$key" >>"$GITHUB_ENV"
-      - name: Package the protected installer bundle
+      - name: Package two signed native builds for update and rollback
         shell: bash
         run: |
           set -euo pipefail
@@ -87,6 +89,12 @@ jobs:
             --provenance target-evaluation/release/apex-provenance \
             --appimage-json "$(ls release/nightly/*.AppImage.json)" \
             --out release/installer --evaluation-key "$EVALUATION_KEY"
+          export APEX_BUILD_NUMBER=$((APEX_BUILD_NUMBER + 1))
+          npm run desktop:linux
+          node scripts/package-linux-installer.mjs --unpacked "$unpacked" \
+            --provenance target-evaluation/release/apex-provenance \
+            --appimage-json "$(ls release/nightly/*.AppImage.json)" \
+            --out release/installer-update --evaluation-key "$EVALUATION_KEY"
           rm -f "$EVALUATION_KEY"
           cd release/installer && sha256sum --check ./*.sha256
       - name: Install the fixture agent
@@ -96,8 +104,8 @@ jobs:
         # production precondition; never weaken the broker's ancestor check.
         run: sudo chown root:root /opt && sudo chmod go-w /opt
       - name: Installed-mode acceptance
-        timeout-minutes: 20
-        run: sudo --preserve-env=CI scripts/linux-installed/acceptance.sh release/installer/*.linux-installer.tar "$RUNNER_TEMP/evidence"
+        timeout-minutes: 35
+        run: sudo --preserve-env=CI scripts/linux-installed/acceptance.sh release/installer/*.linux-installer.tar "$RUNNER_TEMP/evidence" release/installer-update/*.linux-installer.tar
       - uses: actions/upload-artifact@v4
         if: always()
         with:

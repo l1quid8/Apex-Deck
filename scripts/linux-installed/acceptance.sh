@@ -153,6 +153,36 @@ as_user "$DRIVER" approve --marker "$MARKERS/allowed-2"
 [[ -f $MARKERS/allowed-2 ]] || fail "approval after restart did not run"
 [[ ! -e $MARKERS/denied-1 ]] || fail "denied request ran after restart"
 
+if [[ -n ${3:-} ]]; then
+  step "Update, reject an ordinary downgrade, explicitly roll back, then reapply the exact newer build"
+  mkdir "$WORK/update"
+  tar -xf "$3" -C "$WORK/update"
+  ADMIN="/usr/local/sbin/$SLUG-install"
+  FIRST=$(dirname "$INSTALL")
+  NEXT=$(dirname "$WORK"/update/*/apex-deck-install)
+  selected_release() {
+    python3 -I -c 'import json,sys; s=json.load(open(sys.argv[1])); assert s["phase"]=="ready"; print(s["active"]["manifestSha256"])' "/var/lib/$SLUG-provenance/installation.json"
+  }
+  first_id=$(sha256sum "$FIRST/release/manifest.json" | cut -d' ' -f1)
+  next_id=$(sha256sum "$NEXT/release/manifest.json" | cut -d' ' -f1)
+  [[ $first_id != "$next_id" && $(selected_release) == "$first_id" ]] || fail "unexpected initial release"
+  "$ADMIN" update "$NEXT"
+  [[ $(selected_release) == "$next_id" ]] || fail "new build was not selected"
+  if "$ADMIN" update "$FIRST" > /tmp/apex-acceptance-downgrade.log 2>&1; then
+    fail "update accepted an older build"
+  fi
+  grep -q 'highest accepted release' /tmp/apex-acceptance-downgrade.log || fail "wrong downgrade refusal"
+  [[ $(selected_release) == "$next_id" ]] || fail "downgrade refusal changed the selected release"
+  "$ADMIN" rollback
+  [[ $(selected_release) == "$first_id" ]] || fail "rollback did not restore the first release"
+  launch_ui
+  as_user "$DRIVER" approve --marker "$MARKERS/after-rollback"
+  [[ -f $MARKERS/after-rollback ]] || fail "rollback interrupted approvals"
+  "$ADMIN" update "$NEXT"
+  [[ $(selected_release) == "$next_id" ]] || fail "reapply did not restore the newer release"
+  [[ "$(sha256sum /var/lib/$SLUG-provenance/public-key)" == "$KEY_BEFORE" ]] || fail "update replaced authority"
+fi
+
 step "Uninstall keeps authority and the launcher is gone"
 pkill -u "$TESTER" -f "/opt/$SLUG/" || true
 /usr/local/sbin/$SLUG-install uninstall </dev/null

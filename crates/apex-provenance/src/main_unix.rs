@@ -526,6 +526,8 @@ fn main() {
                 println!("{}",serde_json::to_string(&value).map_err(|e|e.to_string())?);Ok(())
             })()),
             Some("initialize-linux-authority") if args.len()==2 => Some(linux_service::initialize()),
+            Some("rollback-linux-release") if args.len()==2 => Some(linux_service::restore_recorded(true)),
+            Some("repair-selected-linux-release") if args.len()==2 => Some(linux_service::restore_recorded(false)),
             Some("stop-linux-daemon") if args.len()==2 => Some(linux_service::stop_daemon()),
             Some("wait-linux-daemon") if args.len()==2 => Some(linux_service::wait_daemon()),
             Some("activate-linux-release") if args.len()==6 => Some(linux_service::activate(Path::new(&args[2]),Path::new(&args[3]),Path::new(&args[4]),Path::new(&args[5]))),

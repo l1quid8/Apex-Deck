@@ -361,10 +361,16 @@ pub fn stage_release(
         manifest.commit,
         &digest[..16]
     ));
+    if target.try_exists().map_err(|e| e.to_string())? {
+        validate_tree(&target, &manifest)?;
+        return Ok(target);
+    }
+    // Publish the immutable name only after every file and directory is durable.
+    let incoming = parent.join(format!("incoming-{}", crate::io::challenge()?));
     std::fs::DirBuilder::new()
-        .create(&target)
+        .create(&incoming)
         .map_err(|e| e.to_string())?;
-    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755))
+    std::fs::set_permissions(&incoming, std::fs::Permissions::from_mode(0o755))
         .map_err(|e| e.to_string())?;
     let result = (|| {
         archive
@@ -380,7 +386,7 @@ pub fn stage_release(
             .collect::<Vec<_>>();
         directories.sort_by_key(|p| p.path.split('/').count());
         for dir in directories {
-            let path = target.join(&dir.path);
+            let path = incoming.join(&dir.path);
             std::fs::create_dir(&path).map_err(|e| e.to_string())?;
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
                 .map_err(|e| e.to_string())?;
@@ -403,7 +409,7 @@ pub fn stage_release(
                 .write(true)
                 .mode(0o600)
                 .custom_flags(libc::O_NOFOLLOW)
-                .open(target.join(&name))
+                .open(incoming.join(&name))
                 .map_err(|e| e.to_string())?;
             std::io::copy(&mut entry, &mut output).map_err(|e| e.to_string())?;
             output
@@ -411,7 +417,7 @@ pub fn stage_release(
                 .and_then(|_| output.sync_all())
                 .map_err(|e| e.to_string())?;
         }
-        validate_tree(&target, &manifest)?;
+        validate_tree(&incoming, &manifest)?;
         let mut directories = manifest
             .files
             .iter()
@@ -419,13 +425,14 @@ pub fn stage_release(
             .collect::<Vec<_>>();
         directories.sort_by_key(|p| std::cmp::Reverse(p.path.split('/').count()));
         for dir in directories {
-            std::fs::File::open(target.join(&dir.path))
+            std::fs::File::open(incoming.join(&dir.path))
                 .and_then(|f| f.sync_all())
                 .map_err(|e| e.to_string())?;
         }
-        std::fs::File::open(&target)
+        std::fs::File::open(&incoming)
             .and_then(|f| f.sync_all())
             .map_err(|e| e.to_string())?;
+        std::fs::rename(&incoming, &target).map_err(|e| e.to_string())?;
         std::fs::File::open(parent)
             .and_then(|f| f.sync_all())
             .map_err(|e| e.to_string())?;
