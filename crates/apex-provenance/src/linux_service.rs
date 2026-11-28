@@ -626,13 +626,18 @@ fn orchestration(
             }
         }
         let release = candidate.manifest().nightly_identity();
-        let health = |ready| -> Result<(), String> {
+        let health = |ready, require_admission| -> Result<(), String> {
             let deadline = Instant::now() + Duration::from_secs(30);
             loop {
                 let nonce = crate::io::challenge()?;
                 let reply = signed_request(serde_json::json!({"op":"health","nonce":nonce}));
-                let result = reply
-                    .and_then(|value| validate_health(&value, &descriptor, release.as_ref(), &nonce, &active, ready));
+                let result = reply.and_then(|value| {
+                    validate_health(&value, &descriptor, release.as_ref(), &nonce, &active, ready)?;
+                    if require_admission && value["authorityReady"] != true {
+                        return Err("Service did not reopen authenticated admission".into());
+                    }
+                    Ok(())
+                });
                 match result {
                     Ok(()) => return Ok(()),
                     Err(error) if Instant::now() >= deadline => return Err(error),
@@ -640,24 +645,19 @@ fn orchestration(
                 }
             }
         };
-        health(false)?;
+        health(false, false)?;
         let mut store = crate::linux_activation::Store::open()?;
         if store.state()?.service_descriptor()? != &descriptor {
             return Err("Candidate changed during health verification".into());
         }
         store.healthy()?;
         drop(store);
-        health(true)?;
+        health(true, false)?;
         std::fs::remove_file(&marker).map_err(|e| e.to_string())?;
         std::fs::File::open(root)
             .and_then(|f| f.sync_all())
             .map_err(|e| e.to_string())?;
-        let nonce = crate::io::challenge()?;
-        let final_health = signed_request(serde_json::json!({"op":"health","nonce":nonce}))?;
-        validate_health(&final_health, &descriptor, release.as_ref(), &nonce, &active, true)?;
-        if final_health["authorityReady"] != true {
-            return Err("Service did not reopen authenticated admission".into());
-        }
+        health(true, true)?;
         if let Some(history) = &mut history {
             history.healthy();
             save_history(history)?;

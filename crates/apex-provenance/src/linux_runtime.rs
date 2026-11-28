@@ -367,7 +367,7 @@ impl Context {
             .arg(launch.guard.start().to_string())
             .arg(&nonce)
             .stdin(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
+            .stderr(std::process::Stdio::inherit());
         let uid = registration.uid();
         let gid = registration.gid();
         unsafe {
