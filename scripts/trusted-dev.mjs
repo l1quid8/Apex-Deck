@@ -118,7 +118,9 @@ export function buildSnapshot() {
         '!node_modules/**','!desktop/dev.mjs','!desktop/run-*.mjs','!desktop/generated-ui/security-*.mjs','!desktop/generated-ui/run-packaged-*.mjs',
         {from:path.join(output,'dist'),to:'dist',filter:['**/*']},
       ],
-      mac:{...baseConfig.mac,identity,notarize:false,signIgnore:['Contents/Resources/bin/(apex|apex-daemon)$','Contents/Resources/Unified Computer Use\\.app(?:/|$)'],extraResources:[
+      mac:{...baseConfig.mac,icon:'build/icons/dev.icns',identity,notarize:false,
+        extendInfo:{...baseConfig.mac?.extendInfo,CFBundleDisplayName:'Apex Deck Dev',CFBundleName:'Apex Deck Dev'},
+        signIgnore:['Contents/Resources/bin/(apex|apex-daemon)$','Contents/Resources/Unified Computer Use\\.app(?:/|$)'],extraResources:[
         {from:helper,to:'Unified Computer Use.app'},
         {from:path.join(bin,'apex-daemon'),to:'bin/apex-daemon'},
         {from:path.join(bin,'apex'),to:'bin/apex'},
