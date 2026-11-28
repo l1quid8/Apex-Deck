@@ -2,6 +2,8 @@
 //! updates are one queued request file that launchd hands to the update job.
 #[cfg(target_os="linux")]
 pub mod linux_runtime;
+#[cfg(target_os="linux")]
+mod linux_release_history;
 #[cfg(any(windows, test))]
 mod signature_cache;
 #[cfg(any(windows, test))]

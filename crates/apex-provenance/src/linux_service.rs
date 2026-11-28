@@ -3,6 +3,8 @@
 //! a verified release, supervised exec and an authenticated health handshake.
 #[cfg(target_os = "linux")]
 use crate::channel::LINUX_TREE;
+#[cfg(target_os = "linux")]
+use crate::linux_release_history::{Action, History};
 use crate::channel::{LINUX_DAEMON_UNIT, LINUX_RUNTIME, LINUX_SERVICE, PRODUCT};
 use crate::linux_activation::Descriptor;
 use crate::linux_registration::LinuxRegistration;
@@ -160,7 +162,7 @@ pub fn activate(
     let candidate =
         crate::linux_activation::VerifiedCandidate::verify(tree, manifest, signature, archive)?;
     #[cfg(target_os = "linux")]
-    return orchestration(&candidate, manifest, signature, archive, false);
+    return orchestration(&candidate, manifest, signature, archive, Action::Activate);
     #[cfg(not(target_os = "linux"))]
     {
         let _ = candidate;
@@ -456,7 +458,21 @@ pub fn recover(
     }
     let candidate =
         crate::linux_activation::VerifiedCandidate::verify(tree, manifest, signature, archive)?;
-    orchestration(&candidate, manifest, signature, archive, true)
+    orchestration(&candidate, manifest, signature, archive, Action::Repair)
+}
+
+#[cfg(target_os = "linux")]
+pub fn restore_recorded(rollback: bool) -> Result<(), String> {
+    if unsafe { libc::geteuid() } != 0 { return Err("Administrator required".into()); }
+    let root = Path::new(crate::ROOT);
+    let action = if rollback { Action::Rollback } else { Action::Repair };
+    let history = History::load(root)?;
+    let selected = history.target(action)?;
+    let dir = root.join("releases").join(&selected.manifest_sha256);
+    let (manifest, signature, archive) = (dir.join("manifest.json"), dir.join("manifest.sig"), dir.join("payload.tar"));
+    let candidate = crate::linux_activation::VerifiedCandidate::verify(&selected.tree, &manifest, &signature, &archive)?;
+    // Authorization is repeated after taking the service transaction lock.
+    orchestration(&candidate, &manifest, &signature, &archive, action)
 }
 
 #[cfg(target_os = "linux")]
@@ -465,7 +481,7 @@ fn orchestration(
     manifest: &Path,
     signature: &Path,
     archive: &Path,
-    recovery: bool,
+    action: Action,
 ) -> Result<(), String> {
     use std::{
         os::unix::{fs::OpenOptionsExt, io::AsRawFd},
@@ -499,10 +515,37 @@ fn orchestration(
     let registry = crate::linux_registration::RegistrationStore::open()?;
     registry.publish_scopes()?;
     let registrations = registry.list()?;
-    metadata(candidate, manifest, signature, archive)?;
+    let recovery = action != Action::Activate;
     let marker = root.join("service.pending");
     if marker.try_exists().map_err(|e| e.to_string())? && !recovery {
         return Err("Interrupted service transaction; explicit recovery required".into());
+    }
+    let history_file = root.join("release-history.json");
+    let save_history = |history: &History| {
+        let bytes = serde_json::to_vec(history).map_err(|e| e.to_string())?;
+        write_protected(&history_file, &bytes, 0o600)
+    };
+    let mut history = if candidate.manifest().build_number.is_some() {
+        let mut history = History::load(root)?;
+        // Seed legacy history before adding another retained release.
+        if !history_file.try_exists().map_err(|e| e.to_string())? {
+            save_history(&history)?;
+        }
+        if action == Action::Activate && history.already_current(candidate) {
+            let guard = crate::linux_activation::admission()?;
+            if guard.descriptor().manifest_sha256 != candidate.descriptor().manifest_sha256 {
+                return Err("Release history differs from the active installation".into());
+            }
+            return Ok(());
+        }
+        history.authorize(candidate, action)?;
+        Some(history)
+    } else {
+        None
+    };
+    metadata(candidate, manifest, signature, archive)?;
+    if let Some(history) = &history {
+        save_history(history)?;
     }
     write_protected(
         &marker,
@@ -614,6 +657,10 @@ fn orchestration(
         validate_health(&final_health, &descriptor, release.as_ref(), &nonce, &active, true)?;
         if final_health["authorityReady"] != true {
             return Err("Service did not reopen authenticated admission".into());
+        }
+        if let Some(history) = &mut history {
+            history.healthy();
+            save_history(history)?;
         }
         Ok(())
     })();

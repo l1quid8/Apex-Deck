@@ -153,6 +153,26 @@ as_user "$DRIVER" approve --marker "$MARKERS/allowed-2"
 [[ -f $MARKERS/allowed-2 ]] || fail "approval after restart did not run"
 [[ ! -e $MARKERS/denied-1 ]] || fail "denied request ran after restart"
 
+if [[ -n ${3:-} ]]; then
+  step "Update, reject an ordinary downgrade, explicitly roll back, then reapply the exact newer build"
+  mkdir "$WORK/update"
+  tar -xf "$3" -C "$WORK/update"
+  ADMIN="/usr/local/sbin/$SLUG-install"
+  FIRST=$(dirname "$INSTALL")
+  NEXT=$(dirname "$WORK"/update/*/apex-deck-install)
+  "$ADMIN" update "$NEXT"
+  if "$ADMIN" update "$FIRST" > /tmp/apex-acceptance-downgrade.log 2>&1; then
+    fail "update accepted an older build"
+  fi
+  grep -q 'highest accepted release' /tmp/apex-acceptance-downgrade.log || fail "wrong downgrade refusal"
+  "$ADMIN" rollback
+  launch_ui
+  as_user "$DRIVER" approve --marker "$MARKERS/after-rollback"
+  [[ -f $MARKERS/after-rollback ]] || fail "rollback interrupted approvals"
+  "$ADMIN" update "$NEXT"
+  [[ "$(sha256sum /var/lib/$SLUG-provenance/public-key)" == "$KEY_BEFORE" ]] || fail "update replaced authority"
+fi
+
 step "Uninstall keeps authority and the launcher is gone"
 pkill -u "$TESTER" -f "/opt/$SLUG/" || true
 /usr/local/sbin/$SLUG-install uninstall </dev/null

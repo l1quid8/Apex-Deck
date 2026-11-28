@@ -26,6 +26,42 @@ sudo ./Apex-Deck-Nightly_<YYYYMMDD>_<sha7>_<arch>.linux-installer/apex-deck-inst
 
 The installer asks the administrator to type a confirmation, then installs the root-owned broker, the engine service and the launcher. Later commands are `sudo apex-deck-nightly-install status | repair | uninstall [--purge]`.
 
+### Update or roll back an installed Nightly
+
+Close the desktop window and finish running agent tasks. An administrator runs:
+
+```sh
+sudo apex-deck-nightly-install update
+sudo apex-deck-nightly-install status
+```
+
+The update command uses Python 3, curl, and the native architecture's installer from the Linux Nightly feed. For an offline update, pass the path to an extracted installer bundle as the only argument to `update`. The installed manager verifies the publisher signature, payload and tree before switching services. Open Apex Deck Nightly again after the command finishes. Updates run on demand.
+
+Run `sudo apex-deck-nightly-install rollback` to restore the previous healthy desktop and engine with their existing enrollment and journal. An interrupted update can be retried with `sudo apex-deck-nightly-install repair`, or abandoned with `rollback` when a healthy predecessor exists. Repair also refreshes the launcher after an interrupted switch. Update refuses builds below the highest accepted signed build, including after rollback. It can reapply that exact highest release or install a newer build. Release trees and signed inputs stay on disk. Allow space for the download, staged files, and retained releases.
+
+#### First upgrade from an installer without an update command
+
+Use the **currently installed broker** to authenticate and stage the first updater-capable bundle. From an ordinary shell, set `bundle` to the extracted new installer directory. The protected temporary folder must be under a root-owned path.
+
+```sh
+(
+  set -eu
+  bundle=/absolute/path/to/extracted.linux-installer
+  authority=/var/lib/apex-deck-nightly-provenance
+  current=$(sudo python3 -I -c 'import json,sys; s=json.load(open(sys.argv[1])); assert s["phase"]=="ready"; print(s["active"]["tree"])' "$authority/installation.json")
+  work=$(sudo mktemp -d /var/lib/apex-deck-nightly-installer/migrate.XXXXXX)
+  trap 'sudo rm -rf -- "$work"' EXIT
+  for file in manifest.json manifest.sig payload.tar; do
+    sudo install -m 0600 "$bundle/release/$file" "$work/$file"
+  done
+  result=$(sudo "$current/resources/bin/apex-provenance" stage-linux-release "$work/manifest.json" "$work/manifest.sig" "$work/payload.tar")
+  tree=${result#Staged verified payload: }
+  sudo "$tree/resources/linux/apex-deck-install" update "$bundle"
+)
+```
+
+The admin tool stays available after rolling back to the earlier desktop. Migration requires a healthy, unambiguous legacy installation with its original retained signed release.
+
 ### Publisher key
 
 Releases are signed with the Linux Nightly publisher key. The broker trusts only the keys in [`crates/apex-provenance/linux-publisher-keys.json`](../crates/apex-provenance/linux-publisher-keys.json), compiled in at build time; a release, its payload or the environment cannot choose another. On a first install the bundle's own broker checks the bundle, so a first install trusts the download as much as any installer: check the `.sha256` against the release, and compare the release's `publisherKey` in the `.json` with the key in that file on `main`. The key protects every later release an installed broker stages.
