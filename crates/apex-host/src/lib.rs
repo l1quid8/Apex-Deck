@@ -42,6 +42,8 @@ pub mod monitor_clock;
 pub mod persona_draft;
 mod assistant_inference;
 pub mod personal;
+pub mod personal_admin;
+pub mod personal_responsibilities;
 pub mod personal_settings;
 pub mod personal_workspace;
 pub mod assistant_avatar;

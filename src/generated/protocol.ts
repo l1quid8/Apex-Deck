@@ -41,6 +41,22 @@ export type ActionModes = {
   write: ActionMode;
 };
 
+export type AdminReceipt = {
+  at: number;
+  error?: string | null;
+  eventId?: string | null;
+  id: string;
+  ok: boolean;
+  summary: string;
+  taskId?: string | null;
+  tool: string;
+  uiTarget?: UiTarget | null;
+  undo?: UndoPatch | null;
+  undoneAt?: number | null;
+};
+
+export type AdminTrustTier = "readOnly" | "copilot" | "fullAdmin";
+
 /** Saved visual identity; has no effect on model behavior. */
 export type AgentAppearance = {
   color: string;
@@ -913,6 +929,13 @@ export type Selection = {
   kind: "pixel";
 };
 
+/** Record only changed keys so that an unrelated later edit survives Undo. */
+export type SettingChange = {
+  applied: unknown;
+  path: Array<string>;
+  previous?: unknown;
+};
+
 /** Only what's given changes. */
 export type Settings = {
   budget?: Budget | null;
@@ -1070,6 +1093,84 @@ export type ToolServer = {
 
 /** Who answers a human message that does not @mention anyone. */
 export type TurnPolicy = "mention" | "everyone" | "round_robin";
+
+export type UiTarget = {
+  assistantId: string;
+  kind: "assignProjects";
+} | {
+  kind: "thread";
+  threadId: string;
+} | {
+  kind: "project";
+  path: string;
+} | {
+  hub?: string | null;
+  kind: "settings";
+} | {
+  agentId?: string | null;
+  kind: "agents";
+};
+
+export type UndoPatch = {
+  kind: "available";
+} | {
+  applied: boolean;
+  id: string;
+  kind: "restoreThreadPin";
+  previous: boolean;
+} | {
+  expected: unknown;
+  id: string;
+  kind: "deleteAgent";
+} | {
+  expected?: unknown;
+  kind: "restoreAgent";
+  profile: unknown;
+  replace: boolean;
+} | {
+  archived: boolean;
+  expectedRevision: number;
+  id: string;
+  kind: "restoreThreadMeta";
+  title: string;
+  trashed: boolean;
+} | {
+  applied?: RoomOptions | null;
+  id: string;
+  kind: "restoreThreadOptions";
+  options: RoomOptions;
+} | {
+  expectedRevision?: number | null;
+  expectedRoom?: string | null;
+  id: string;
+  kind: "deleteThread";
+} | {
+  changes: Array<SettingChange>;
+  kind: "restoreSettings";
+} | {
+  enabled: boolean;
+  kind: "restoreCodeMode";
+} | {
+  kind: "restoreReplySuggestions";
+  mode: Mode;
+} | {
+  kind: "removeProject";
+  path: string;
+} | {
+  kind: "addProject";
+  name: string;
+  path: string;
+} | {
+  kind: "renameProject";
+  name: string;
+  path: string;
+} | {
+  expectedRevision: number;
+  kind: "restoreProject";
+  name?: string | null;
+  path: string;
+  removed: boolean;
+};
 
 /** One thing a bot did while writing a reply. */
 export type WorkStep = {
@@ -2169,6 +2270,26 @@ export type Command = {
 } | {
   args: {
     assistantId: string;
+    trust: AdminTrustTier;
+  };
+  cmd: "personal_admin_trust_set";
+} | {
+  args: {
+    args: unknown;
+    assistantId: string;
+    eventId?: string | null;
+    tool: string;
+  };
+  cmd: "personal_admin_execute";
+} | {
+  args: {
+    assistantId: string;
+    receiptId: string;
+  };
+  cmd: "personal_admin_undo";
+} | {
+  args: {
+    assistantId: string;
     head: string;
     pr: number;
     repo: string;
@@ -2907,6 +3028,21 @@ export type GatewayAdminRequest = {
  * name the desktop UI listens for, and `payload` is what it receives.
  */
 export type HostEvent = {
+  name: "ui-navigate";
+  payload: {
+    assistantId?: string | null;
+    target: UiTarget;
+  };
+} | {
+  name: "personal-stream";
+  payload: {
+    assistantId: string;
+    eventId: string;
+    kind: string;
+    receipt?: AdminReceipt | null;
+    text?: string | null;
+  };
+} | {
   name: "thread-catalog-changed";
   payload: Record<string, never>;
 } | {
@@ -3807,6 +3943,20 @@ export interface Commands {
     taken?: Array<string>;
     writer: ParticipantConfig;
   };
+  personal_admin_execute: {
+    args: unknown;
+    assistantId: string;
+    eventId?: string | null;
+    tool: string;
+  };
+  personal_admin_trust_set: {
+    assistantId: string;
+    trust: AdminTrustTier;
+  };
+  personal_admin_undo: {
+    assistantId: string;
+    receiptId: string;
+  };
   personal_approval_options: {
     assistantId: string;
     decisionId: string;
@@ -4568,6 +4718,13 @@ export interface HostEvents {
     assistantId: string;
     revision: number;
   };
+  "personal-stream": {
+    assistantId: string;
+    eventId: string;
+    kind: string;
+    receipt?: AdminReceipt | null;
+    text?: string | null;
+  };
   "pty-data": {
     cursor: number;
     data: string;
@@ -4594,6 +4751,10 @@ export interface HostEvents {
   "session-changed": unknown;
   "settings-changed": unknown;
   "thread-catalog-changed": Record<string, never>;
+  "ui-navigate": {
+    assistantId?: string | null;
+    target: UiTarget;
+  };
 }
 export type HostEventName = keyof HostEvents;
 

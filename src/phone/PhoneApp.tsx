@@ -36,8 +36,8 @@ import { ApprovalCard } from "../ApprovalCard";
 import { Avatar } from "../Avatar";
 import { ApexAgentSources } from "../ApexAgentSources";
 import { ApexAgentAll } from "../ApexAgentAll";
-import type { PersonalLane } from "../personalAssistant";
 import "../apex-agent-dock.css";
+import { PhoneAssistantRoster } from "./PhoneAssistantRoster";
 import { usePersonalAssistants } from "../usePersonalAssistants.ts";
 import { PhoneTasks } from "./PhoneTasks";
 import { collectPhoneTasks, phoneTaskBackend, phoneTasksNeedAttention, phonePersonalTaskSources, phoneHandoffTasks } from "./taskFeed.ts";
@@ -3282,7 +3282,7 @@ export function PhoneApp() {
         ) : (
           <SideTab tab={tab} link={openLink ?? mac ?? links[0] ?? null} host={openLink ? phoneHost(openLink.id) : macHost ?? hosts[0] ?? null} hosts={hosts} terminalCwd={openWorkspace?.path ?? workspaces.find((workspace) => workspaceHost(workspace) === (openLink ?? mac)?.id)?.path ?? null} agents={agents} covered={covered} assistantProjects={assistantProjects} assistantRegistryErrors={assistantRegistryErrors} terminalSwitcherOpen={terminalSwitcherOpen} onTerminalSwitcherOpened={() => setTerminalSwitcherOpen(false)} terminalResumeSignal={terminalResumeSignal} onTerminalWaiting={setTerminalNeedsAnswer}
             terminalHomeSignal={terminalHomeSignal} onTerminalViewing={setTerminalViewing}
-            personal={personal} onPersonal={() => setPersonalOpen(true)}
+            assistantRoster={<PhoneAssistantRoster collection={personalCollection} hosts={hosts} onOpen={() => setPersonalOpen(true)} />}
             library={<PhoneLibrary machines={libraryMachines} threads={panes} workspaces={workspaces} onOpenThread={openThread} />}
             bots={(session?.profiles ?? []).map((profile) => ({ ...toPerson(profile), tool: toolWords(profile), ...botDoing(profile.id) }))}
             canEditAgents={true}
@@ -5122,7 +5122,7 @@ function Machines({ machines, links, routes, covered, machineIcon, missing, pair
   );
 }
 
-function SideTab({ tab, link, host, hosts, terminalCwd, agents, bots, covered, library, assistantProjects, assistantRegistryErrors, terminalSwitcherOpen, onTerminalSwitcherOpened, terminalResumeSignal, onTerminalWaiting, terminalHomeSignal, onTerminalViewing, onAssistant, onShow, personal, onPersonal, canEditAgents, onNewAgent, onEditAgent }: { tab: Tab; link: LinkView | null; host: PhoneHost | null; hosts: PhoneHost[]; terminalCwd: string | null; agents: string[]; bots: (Person & { tool: string; working: string | null; cutOff: string | null })[]; covered: boolean; library: ReactNode; assistantProjects: { workspace: Workspace; link: LinkView | null; allowed: boolean }[]; assistantRegistryErrors: Record<string, string>; terminalSwitcherOpen: boolean; onTerminalSwitcherOpened(): void; terminalResumeSignal: number; onTerminalWaiting(waiting: boolean): void; terminalHomeSignal: number; onTerminalViewing(viewing: boolean): void; onAssistant(workspaceId: string): void; onShow(): void; personal: PersonalLane | null; onPersonal(): void; canEditAgents: boolean; onNewAgent(): void; onEditAgent(id: string): void }) {
+function SideTab({ tab, link, host, hosts, terminalCwd, agents, bots, covered, library, assistantProjects, assistantRegistryErrors, terminalSwitcherOpen, onTerminalSwitcherOpened, terminalResumeSignal, onTerminalWaiting, terminalHomeSignal, onTerminalViewing, onAssistant, onShow, assistantRoster, canEditAgents, onNewAgent, onEditAgent }: { tab: Tab; link: LinkView | null; host: PhoneHost | null; hosts: PhoneHost[]; terminalCwd: string | null; agents: string[]; bots: (Person & { tool: string; working: string | null; cutOff: string | null })[]; covered: boolean; library: ReactNode; assistantProjects: { workspace: Workspace; link: LinkView | null; allowed: boolean }[]; assistantRegistryErrors: Record<string, string>; terminalSwitcherOpen: boolean; onTerminalSwitcherOpened(): void; terminalResumeSignal: number; onTerminalWaiting(waiting: boolean): void; terminalHomeSignal: number; onTerminalViewing(viewing: boolean): void; onAssistant(workspaceId: string): void; onShow(): void; assistantRoster: ReactNode; canEditAgents: boolean; onNewAgent(): void; onEditAgent(id: string): void }) {
   useEffect(() => { if (tab === "agents") onShow(); }, [tab, link?.id, link?.status]);
   // The Library lists every paired machine itself, so it doesn't follow one machine or wait on the Mac.
   if (tab === "library") return <main className="ph-content" inert={covered}>{library}</main>;
@@ -5154,21 +5154,7 @@ function SideTab({ tab, link, host, hosts, terminalCwd, agents, bots, covered, l
         </div>
         {bots.length === 0 && <p className="ph-list-note">No agents yet. Make one with + New agent, or save one from a thread on the Mac.</p>}
       </>}
-      {tab === "agents" && personal && <>
-        <div className="ph-section">Your assistant</div>
-        <div className="ph-list">{(() => {
-          const waiting = personal.assistant?.tasks.filter((task) => task.status === "needsYou" && task.decision?.status === "open").length ?? 0;
-          // Tasks that need you, plus delivered notices nobody has seen yet.
-          const unseen = personal.assistant?.notices?.filter((notice) => notice.deliveredAt && !notice.seenAt).length ?? 0;
-          const needYou = waiting + unseen;
-          const usable = !!personal.assistant && !personal.offline;
-          const detail = personal.problem ?? (personal.offline ? `${personal.hostName} can't be reached` : !personal.assistant ? `Set it up on ${personal.hostName} from the Mac` : needYou ? `${personal.hostName} · ${needYou} need${needYou === 1 ? "s" : ""} you` : `${personal.hostName} · Open conversation`);
-          return <button type="button" className="ph-srow ph-project-assistant" disabled={!usable} onClick={onPersonal}>
-            <span className="ph-grow"><strong>{personal.name}</strong><small className={needYou ? "ph-amber" : undefined}>{detail}</small></span>
-            {usable && <ChevronRight size={15} />}
-          </button>;
-        })()}</div>
-      </>}
+      {tab === "agents" && assistantRoster}
       {tab === "agents" && <>
         <div className="ph-section">Project assistants</div>
         {assistantProjects.length === 0

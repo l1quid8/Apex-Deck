@@ -38,7 +38,7 @@ pub(crate) fn queue(assistant: &mut PersonalAssistant, task:&AssistantTask, atte
     assistant.events.push(PersonalEvent {
         id:format!("pe-{}",assistant.counters.event),request_id:request,
         source:EventSource::Internal{what:format!("delegated-report:{}:{}",task.id,attempt.run_id)},
-        received_at:at,state:EventState::Received,attempts:0,error:None,spend_approved:false,computer_started:false,saved_reply:None,
+        received_at:at,state:EventState::Received,attempts:0,error:None,spend_approved:false,computer_started:false, admin_started:false,saved_reply:None,
     });
 }
 

@@ -92,6 +92,10 @@ pub(crate) fn plan_legacy_personal(bytes: &[u8], source_sha256: &str, now: u64) 
     let mut plan = LegacyPersonalPlan { rows: vec![], problems: vec![], assistants: vec![], skipped_ids: vec![] };
     for original in legacy.assistants {
         let mut a = original.clone();
+        // A legacy file cannot grant admin trust or supply executable undo records.
+        a.admin_trust = crate::personal_admin::AdminTrustTier::ReadOnly;
+        a.admin_receipts.clear();
+        a.counters.admin_receipt = 0;
         if let Err(reason) = reconcile_ids(&mut a) {
             plan.skipped_ids.push(format!("assistant:{}", original.id));
             plan.problems.push(Problem { id: original.id.clone(), reason });

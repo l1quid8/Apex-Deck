@@ -75,6 +75,8 @@ pub struct Counters {
     pub notice: u64,
     #[serde(default)]
     pub rule: u64,
+    #[serde(default)]
+    pub admin_receipt: u64,
 }
 
 /// What kind of action something is. The assistant's rule for the class
@@ -324,6 +326,14 @@ fn default_context_budget() -> u64 { 24_000 }
 #[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PersonalAssistant {
+    #[serde(default)]
+    pub admin_trust: crate::personal_admin::AdminTrustTier,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub admin_receipts: Vec<crate::personal_admin::AdminReceipt>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub responsibilities: Vec<crate::personal_responsibilities::Responsibility>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub responsibility_draft: Option<crate::personal_responsibilities::ResponsibilityDraft>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived_at: Option<u64>,
     pub id: String,
@@ -567,6 +577,8 @@ pub struct PersonalEvent {
     /// real actions. It settles once, whatever happens.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub computer_started: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub admin_started: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub saved_reply: Option<PreparedPersonalReply>,
 }
@@ -772,6 +784,9 @@ pub struct ProcessMark {
 #[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PersonalTask {
+    /// Set only by the Host for an approved, addressed response to a watch decision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub responsibility_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deleted_at: Option<u64>,
     pub id: String,
@@ -812,6 +827,11 @@ pub struct PersonalTask {
 }
 
 impl PersonalAssistant {
+    pub(crate) fn next_admin_receipt_id(&mut self) -> Result<String, String> {
+        self.counters.admin_receipt = self.counters.admin_receipt.checked_add(1).ok_or("Admin receipt counter overflow")?;
+        Ok(format!("ar-{}", self.counters.admin_receipt))
+    }
+
     pub(crate) fn next_message_id(&mut self) -> String {
         self.counters.message += 1;
         format!("pm-{}", self.counters.message)
@@ -917,6 +937,8 @@ impl PersonalAssistant {
     /// Settled events beyond the limit are dropped oldest first. Pending ones never are.
     fn prune_events(&mut self) {
         let mut referenced: std::collections::BTreeSet<_> = self.tasks.iter().map(|task|task.from_event.clone()).collect();
+        referenced.extend(self.responsibilities.iter().filter(|r| r.live()).map(|r| r.source_event_id.clone()));
+        if let Some(draft) = &self.responsibility_draft { referenced.insert(draft.source_event_id.clone()); }
         // The task ledger can still contain an unreleased gate after source
         // publication. Keep its source/control proof until explicit purge.
         referenced.extend(self.events.iter().filter(|event|event.saved_reply.as_ref().is_some_and(|saved|!saved.delegations.is_empty())).map(|event|event.id.clone()));
@@ -943,17 +965,18 @@ impl PersonalAssistant {
             if event.state == EventState::Processing {
                 // A finished private reply is recovery truth even when its
                 // computer turn performed side effects. Publish it, never rerun.
-                let uncertain=event.computer_started && event.saved_reply.is_none();
+                let uncertain=(event.admin_started || event.computer_started) && event.saved_reply.is_none();
                 event.state = if uncertain { EventState::Failed } else { EventState::Received };
                 if uncertain {
-                    event.error = Some(crate::personal_worker::COMPUTER_INTERRUPTED.into());
-                    interrupted.push(event.id.clone());
+                    let note=if event.admin_started {"Deck restarted during this action. Check its receipt before retrying."} else {crate::personal_worker::COMPUTER_INTERRUPTED};
+                    event.error = Some(note.into());
+                    interrupted.push((event.id.clone(),note));
                 }
                 changed = true;
             }
         }
-        for id in interrupted {
-            self.post("system", "update", crate::personal_worker::COMPUTER_INTERRUPTED.into(), None, Some(id), now());
+        for (id,note) in interrupted {
+            self.post("system", "update", note.into(), None, Some(id), now());
         }
         for task in &mut self.tasks {
             if task.status == TaskStatus::Running {
@@ -988,6 +1011,8 @@ pub struct PersonalEventView {
     pub spend_approved: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub computer_started: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub admin_started: bool,
 }
 
 impl From<&PersonalEvent> for PersonalEventView {
@@ -1002,6 +1027,7 @@ impl From<&PersonalEvent> for PersonalEventView {
             error: e.error.clone(),
             spend_approved: e.spend_approved,
             computer_started: e.computer_started,
+            admin_started: e.admin_started,
         }
     }
 }
@@ -1009,6 +1035,12 @@ impl From<&PersonalEvent> for PersonalEventView {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PersonalAssistantView {
+    #[serde(default)]
+    pub admin_trust: crate::personal_admin::AdminTrustTier,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub admin_receipts: Vec<crate::personal_admin::AdminReceipt>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub responsibilities: Vec<crate::personal_responsibilities::ResponsibilityView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived_at: Option<u64>,
     pub id: String,
@@ -1075,6 +1107,9 @@ pub struct PersonalAssistantView {
 impl From<&PersonalAssistant> for PersonalAssistantView {
     fn from(a: &PersonalAssistant) -> Self {
         Self {
+            admin_trust: a.admin_trust,
+            admin_receipts: a.admin_receipts.iter().map(|r|r.for_client()).collect(),
+            responsibilities: a.responsibilities.iter().map(Into::into).collect(),
             archived_at: a.archived_at,
             id: a.id.clone(),
             name: a.name.clone(),
@@ -1328,6 +1363,10 @@ impl crate::Host {
             let n = assistants.len() + 1;
             let id = (n..).map(|n| format!("asst-{n}")).find(|id| !assistants.iter().any(|a| &a.id == id)).unwrap();
             let assistant = PersonalAssistant {
+                admin_trust: Default::default(),
+                admin_receipts: Vec::new(),
+                responsibilities: Vec::new(),
+                responsibility_draft: None,
                 archived_at: None,
                 id, name: name.to_owned(), style: input.style.trim().to_owned(), host_id,
                 projects: vec![], workspace_config_version: None, extra: Default::default(),
@@ -1347,13 +1386,10 @@ impl crate::Host {
             if let Some(image) = image {let look=assistant.look.get_or_insert_with(Look::default);look.kind=Some(crate::personal_workspace::AvatarKind::Image);look.image=Some(image);}
             if let Some(draft)=input.avatar_draft_id {assistant.costs.extend(self.avatar_creation_costs_locked(&draft)?);assistant.extra.insert("avatarCreationDraftId".into(),serde_json::Value::String(draft));}
             assistant.workspace_config_version=input.workspace_version;
-            // It introduces itself and says what it can do, the way Dot does.
             let intro = format!(
-                "Hi, I'm {name}. I live on this server, so I keep working when your phone and Mac are closed. \
-                 I can check on this machine, run something later or every so often until something happens, \
-                 keep an eye on things on a schedule, remember what you tell me, and send helpers to think something \
-                 through while we keep talking. Reading runs without asking; anything that changes things asks you first. \
-                 You can change that in Rules.",
+                "Hi, I'm {name}. I can follow an assigned thread and come back here when something needs you. \
+                 I can keep watching after you close Apex while my home machine is awake and its Apex service is running. \
+                 You can choose what I may do in Rules.",
                 name = assistant.name);
             assistant.post("assistant", "chat", intro, None, None, at);
             assistants.push(assistant.clone());
@@ -1400,7 +1436,7 @@ impl crate::Host {
             };
             assistant.events.push(PersonalEvent {
                 id: event_id.clone(), request_id: request, source, received_at: at,
-                state, attempts: 0, error: None, spend_approved: false, computer_started: false, saved_reply: None,
+                state, attempts: 0, error: None, spend_approved: false, computer_started: false, admin_started:false, saved_reply: None,
             });
             assistant.prune_events();
             Ok((event_id, false))
@@ -1525,7 +1561,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_restart_never_replays_a_reply_that_had_computer_tools() {
-        let event=|id:&str,computer_started|PersonalEvent{id:id.into(),request_id:id.into(),source:EventSource::Human{text:"Close the tab".into(),view_context:None},received_at:0,state:EventState::Processing,attempts:1,error:None,spend_approved:false,computer_started,saved_reply:None};
+        let event=|id:&str,computer_started|PersonalEvent{id:id.into(),request_id:id.into(),source:EventSource::Human{text:"Close the tab".into(),view_context:None},received_at:0,state:EventState::Processing,attempts:1,error:None,spend_approved:false,computer_started,admin_started:false,saved_reply:None};
         let mut assistant: PersonalAssistant=serde_json::from_value(serde_json::json!({"id":"a","name":"A","style":"","hostId":"h","profile":null,"allowedFolders":[],"paused":false,"revision":1,"createdAt":0,"counters":{"message":0,"event":0,"task":0,"decision":0},"messages":[],"events":[],"tasks":[]})).unwrap();
         assistant.events=vec![event("plain",false),event("acted",true)];
         assert!(assistant.recover());
@@ -1537,7 +1573,7 @@ pub(crate) mod tests {
     #[test]
     fn lifecycle_source_receipts_survive_event_pruning_until_explicit_purge() {
         let mut assistant: PersonalAssistant=serde_json::from_value(serde_json::json!({"id":"a","name":"A","style":"","hostId":"h","profile":null,"allowedFolders":[],"paused":false,"revision":1,"createdAt":0,"counters":{"message":0,"event":0,"task":0,"decision":0},"messages":[],"events":[],"tasks":[{"id":"pt-1","goal":"Task","completionCriteria":[],"targetHost":"h","status":"cancelled","fromEvent":"source","maxAttempts":3,"createdAt":0,"updatedAt":0,"deletedAt":1}]})).unwrap();
-        for i in 0..MAX_SETTLED_EVENTS+2 {assistant.events.push(PersonalEvent{id:if i==0 {"source".into()} else {format!("event-{i}")},request_id:format!("request-{i}"),source:EventSource::Human{text:"Original".into(),view_context:None},received_at:0,state:EventState::Done,attempts:0,error:None,spend_approved:false,computer_started:false,saved_reply:None});}
+        for i in 0..MAX_SETTLED_EVENTS+2 {assistant.events.push(PersonalEvent{id:if i==0 {"source".into()} else {format!("event-{i}")},request_id:format!("request-{i}"),source:EventSource::Human{text:"Original".into(),view_context:None},received_at:0,state:EventState::Done,attempts:0,error:None,spend_approved:false,computer_started:false, admin_started:false,saved_reply:None});}
         assistant.prune_events();
         assert!(assistant.events.iter().any(|event|event.id=="source"),"source request authority cannot be discarded while a deleted task awaits Empty");
     }
@@ -1572,7 +1608,7 @@ pub(crate) mod tests {
         let prepared = PreparedPersonalReply {
             reply: "Hello".into(), cost, remember: vec![], forget: vec![], helpers: vec![], delegations: vec![], proposed_task: None, proposed_schedule: None, screen: false, outside: false, delegated_request_ids: vec![],
         };
-        let event = PersonalEvent { id: "pe-1".into(), request_id: "req-1".into(), source: EventSource::Human { text: "Hi".into(), view_context: None }, received_at: 0, state: EventState::Done, attempts: 1, error: None, spend_approved: false, computer_started: false, saved_reply: Some(prepared) };
+        let event = PersonalEvent { id: "pe-1".into(), request_id: "req-1".into(), source: EventSource::Human { text: "Hi".into(), view_context: None }, received_at: 0, state: EventState::Done, attempts: 1, error: None, spend_approved: false, computer_started: false, admin_started:false, saved_reply: Some(prepared) };
         let assistant: PersonalAssistant = serde_json::from_value(serde_json::json!({"id":"a","name":"A","style":"","hostId":"h","profile":null,"allowedFolders":[],"paused":false,"revision":1,"createdAt":0,"counters":{"message":0,"event":0,"task":0,"decision":0},"messages":[],"events":[],"tasks":[]})).unwrap();
         let mut assistant = assistant;
         assistant.events = vec![event];

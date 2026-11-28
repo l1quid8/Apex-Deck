@@ -232,6 +232,9 @@ export class PersonalAssistantsCollection {
       currentThread: permittedThread && currentThread ? {...currentThread,project:currentThread.project && {...currentThread.project}} : undefined,
       name: row.assistant.name, assistant: row.assistant, hostName: this.hosts.get(row.routeHostId)?.name ?? row.routeHostId, offline: this.offline(row), problem: this.hosts.get(row.routeHostId)?.problem,
       send: text => after("personal_send", { requestId: request(), text, ...sendContext() }),
+      answerResponsibility: (messageId, text) => after("personal_send", {
+        requestId: 'watch-decision:' + messageId, text,
+      }),
       handoffSelect: route.supports?.("assistant_conversation_handoff_v1") !== true ? undefined : async (draft, selection) => {
         const result = await call<import('./personalAssistant').HandoffSelectReceipt>("personal_handoff_select", {assistantId: need(), requestId: request(), draftId: draft.id, expectedDraftRevision: draft.revision, slot: draft.missing, selection});
         need(); await this.refresh(); return result;
@@ -243,6 +246,8 @@ export class PersonalAssistantsCollection {
         if (result.taskId !== input.taskId) throw new Error("The host returned a control for a different task.");
         need(); await this.refresh(); return result;
       },
+      undoAdmin: row.assistant.adminTrust === undefined ? undefined : receiptId => call("personal_admin_undo", {assistantId: need(), receiptId}),
+      setAdminTrust: row.assistant.adminTrust === undefined ? undefined : trust => call<PersonalAssistantRecord>("personal_admin_trust_set", {assistantId: need(), trust}),
       shipOffers: route.supports?.("assistant_ship_v1") !== true ? undefined : () => call("personal_ship_offers", {assistantId: need()}),
       ship: route.supports?.("assistant_ship_v1") !== true ? undefined : (pr, head, repo) => call("personal_ship", {assistantId: need(), pr, head, repo}),
       cancelShip: route.supports?.("assistant_ship_v1") !== true ? undefined : (room, expected) => call("room_thread_git_action", {id: room, action: {kind: "cancel_merge", expected}}),
@@ -321,9 +326,10 @@ export class PersonalAssistantsCollection {
     if (settings.look && Object.keys(settings.look).some(key => key !== "color" && key !== "shape")) throw new Error("This host's legacy settings cannot save extended assistant appearance. Workspace configuration support is required.");
   }
   /** Captures the authenticated host before any creation await. Never follows selection. */
-  create = async (routeHostId: string, input: import('./AssistantWorkspace').AssistantCreation): Promise<AssistantRef> => {
+  create = async (routeHostId: string, input: import('./AssistantWorkspace').AssistantCreation, expectedHostId?: string): Promise<AssistantRef> => {
     if (this.options.offlineHost(routeHostId)) throw new Error("This machine is offline.");
     const route = this.options.hostBackend(routeHostId), hostId = this.owner(route);
+    if (expectedHostId != null && hostId !== expectedHostId) throw new Error("The machine identity changed. Reopen setup on the intended machine.");
     if (route.supports?.('assistant_workspace_v4') !== true) throw new Error("Update this machine’s service to create workspace assistants.");
     const assistant = await route.call<PersonalAssistantRecord>('personal_create', { ...input, look: { ...input.look } });
     if (this.options.hostBackend(routeHostId) !== route || this.owner(route) !== hostId) throw new Error("The machine identity changed during creation. Refresh this machine before continuing.");

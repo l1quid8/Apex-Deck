@@ -70,6 +70,31 @@ mod device_access_updates {
     }
 
     #[tokio::test]
+    async fn paired_linux_phone_can_create_and_reopen_its_assistant() {
+        let (mut daemon, data, _bot, folder) = fixture(true, Ok(()));
+        let host_id = crate::identity::host_id(&data.0).unwrap();
+        Arc::get_mut(&mut daemon).unwrap().host_id = host_id.clone();
+        let phone = add(&daemon, 76);
+        let (mut client, _session) = connect_device(&daemon, &phone, 1 << 16);
+        let hello = client.hello().await;
+        assert!(hello.get("ok").is_some(), "{hello}");
+        let profile = json!({"id":"alfred","display_name":"Alfred","access":"read",
+            "backend":{"kind":"agent","tool":"codex","model":null}});
+        client.send(json!({"id":1,"cmd":"personal_create","args":{
+            "name":"Alfred","folder":folder,"profile":profile
+        }})).await;
+        let created = client.until_reply(1).await.pop().unwrap();
+        assert_eq!(created["ok"]["name"], "Alfred", "{created}");
+        let id = &created["ok"]["id"];
+        let (mut reopened, _next_session) = connect_device(&daemon, &phone, 1 << 16);
+        assert!(reopened.hello().await.get("ok").is_some());
+        reopened.send(json!({"id":2,"cmd":"personal_get","args":{"assistantId":id}})).await;
+        let saved = reopened.until_reply(2).await.pop().unwrap();
+        assert_eq!(saved["ok"]["id"], *id, "{saved}");
+        assert_eq!(saved["ok"]["hostId"], host_id);
+    }
+
+    #[tokio::test]
     async fn linux_device_can_lower_access() {
         let (daemon, _data, bot, folder) = fixture(true, Ok(()));
         let phone = add(&daemon, 75);

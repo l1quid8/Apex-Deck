@@ -20,6 +20,7 @@ base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 sha2 = "0.10"
 ring = "0.17"
+jiff = { version = "0.2", default-features = false, features = ["std", "tzdb-bundle-always"] }
 tokio-tungstenite = "0.28"
 trash = "5"
 

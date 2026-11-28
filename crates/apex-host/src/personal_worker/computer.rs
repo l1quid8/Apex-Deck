@@ -135,7 +135,7 @@ pub(super) fn hold_for_permission(assistant:&mut PersonalAssistant,event:&crate:
     let id=assistant.next_task_id();
     let mut decision=super::open_decision(assistant,DecisionKind::Approve,&operation,at);
     decision.prompt="Allow computer tools for this reply only? Native app approvals still apply. Changing permissions invalidates this approval.".into();
-    assistant.tasks.push(PersonalTask{deleted_at:None,id:id.clone(),goal:"Use computer for this reply".into(),completion_criteria:vec![],target_host:assistant.host_id.clone(),status:TaskStatus::NeedsYou,class:ToolClass::Write,operation:Some(operation),decision:Some(decision),receipts:vec![],from_event:event.id.clone(),max_attempts:1,created_at:at,updated_at:at,last_update:Some("Waiting for permission for this reply.".into()),kind:TaskKind::Command,wait:None,runs_done:0,parent:None,schedule_id:None,assignment:None});
+    assistant.tasks.push(PersonalTask{responsibility_id:None,deleted_at:None,id:id.clone(),goal:"Use computer for this reply".into(),completion_criteria:vec![],target_host:assistant.host_id.clone(),status:TaskStatus::NeedsYou,class:ToolClass::Write,operation:Some(operation),decision:Some(decision),receipts:vec![],from_event:event.id.clone(),max_attempts:1,created_at:at,updated_at:at,last_update:Some("Waiting for permission for this reply.".into()),kind:TaskKind::Command,wait:None,runs_done:0,parent:None,schedule_id:None,assignment:None});
     if let Some(saved)=assistant.events.iter_mut().find(|e|e.id==event.id) {saved.state=EventState::Held;}
     assistant.post("system","approval","Allow once: computer tools for this reply. Native app approvals still apply.".into(),Some(id),Some(event.id.clone()),at);
     true

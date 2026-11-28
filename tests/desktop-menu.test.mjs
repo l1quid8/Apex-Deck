@@ -108,13 +108,39 @@ for (const platform of ['darwin', 'win32']) {
 test('Electron builds both platform menus and dispatches their existing pane commands', { timeout: 30000 }, async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'deck-native-menu-'));
   const main = path.join(temp, 'main.cjs');
+  // Keep diagnostics outside the disposable profile so a failed CI run retains
+  // native dumps. This fixture contains no app data and never uploads reports.
+  const diagnosticsRoot = process.env.APEX_MENU_DIAGNOSTICS_DIR;
+  if (diagnosticsRoot) fs.mkdirSync(diagnosticsRoot, { recursive: true });
+  const diagnostics = diagnosticsRoot ? fs.mkdtempSync(path.join(diagnosticsRoot, 'menu-')) : null;
   fs.writeFileSync(main, `
-    const { app, Menu } = require('electron');
+    const { app, Menu, crashReporter } = require('electron');
     const assert = require('node:assert/strict');
     const vm = require('node:vm');
-    app.whenReady().then(() => {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const diagnostics = ${JSON.stringify(diagnostics)};
+    function phase(name, detail = {}) {
+      if (diagnostics) fs.appendFileSync(path.join(diagnostics, 'lifecycle.jsonl'), JSON.stringify({ phase: name, at: new Date().toISOString(), ...detail }) + '\\n');
+    }
+    if (diagnostics) {
+      const dumps = path.join(diagnostics, 'crash-dumps');
+      fs.mkdirSync(dumps, { recursive: true });
+      app.setPath('crashDumps', dumps);
+      crashReporter.start({ uploadToServer: false });
+    }
+    phase('starting', { platform: process.platform, arch: process.arch, versions: process.versions });
+    app.on('before-quit', () => phase('before-quit'));
+    app.on('will-quit', () => phase('will-quit'));
+    app.on('quit', (_, code) => phase('quit', { code }));
+    app.on('child-process-gone', (_, details) => phase('child-process-gone', details));
+    app.whenReady().then(async () => {
       try {
+        phase('ready');
+        let mainLoopTurnReached = false;
+        setTimeout(() => { mainLoopTurnReached = true; phase('main-loop-turn'); }, 0);
         for (const platform of ['darwin', 'win32']) {
+          phase('building-menu', { templatePlatform: platform });
           const events = [];
           const built = vm.runInNewContext(${JSON.stringify(`${menuSource}\nmenu()`)} , {
             app: { name: 'Apex Deck', isPackaged: true },
@@ -136,13 +162,32 @@ test('Electron builds both platform menus and dispatches their existing pane com
             { channel: 'menu', action: 'updates' }, { channel: 'menu', action: 'hosts' },
           ]);
         }
+        phase('assertions-passed');
         console.log('Native menu construction and pane dispatch passed for both templates');
+        // Exiting in ready can take Electron 44's early teardown path. Wait
+        // one main-loop turn; keep the exit code and a single scenario attempt.
+        // https://github.com/electron/electron/issues/55011
+        await new Promise(resolve => setTimeout(resolve, 0));
+        assert.ok(mainLoopTurnReached, 'native exit must wait for the main message loop');
+        phase('exit-requested', { code: 0 });
         app.exit(0);
-      } catch (error) { console.error(error.stack); app.exit(1); }
+      } catch (error) { phase('assertion-failed', { error: error.stack }); console.error(error.stack); app.exit(1); }
     });
   `);
   try {
-    const result = await runElectronScenario(electron, main, temp, { timeoutMs: 20000, attempts: 1 });
+    // Native dumps contain process memory. Give this synthetic child only OS
+    // launch/display settings; never pass CI credentials or application secrets.
+    const allowed = new Set(['PATH', 'PATHEXT', 'SYSTEMROOT', 'WINDIR', 'COMSPEC',
+      'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TMP', 'TEMP', 'TMPDIR',
+      'DISPLAY', 'WAYLAND_DISPLAY', 'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS',
+      'LANG', 'LC_ALL', 'LC_CTYPE']);
+    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => allowed.has(key.toUpperCase())));
+    const result = await runElectronScenario(electron, main, temp, { timeoutMs: 20000, attempts: 1, env });
+    if (diagnostics) {
+      fs.writeFileSync(path.join(diagnostics, 'result.json'), JSON.stringify(result, null, 2));
+      fs.copyFileSync(main, path.join(diagnostics, 'main.cjs'));
+      if (result.code !== 0) console.error('Native menu diagnostics:', diagnostics);
+    }
     assert.equal(result.code, 0, result.output);
   } finally {
     fs.rmSync(temp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });

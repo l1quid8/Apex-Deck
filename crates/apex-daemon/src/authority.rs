@@ -40,6 +40,7 @@ pub fn command_needs(command: &Command) -> Need {
         AssistantHandoffPrepare { .. } | AssistantOverview { .. } | AssistantMessage { .. } | AssistantTaskAction { .. } | ProjectTaskLifecycle { .. } => Need::Paired,
         RoomState { .. } => Need::Paired,
         RoomDiff { .. } | RoomGitStatus { .. } | RoomReplyDecision { .. } | RoomReplyDecisionDismiss { .. } => Need::Paired,
+        PersonalAdminTrustSet { .. } | PersonalAdminExecute { .. } | PersonalAdminUndo { .. } => Need::Paired,
         PersonalShipOffers { .. } | PersonalShip { .. } => Need::Paired,
         RoomThreadGitAction { .. } | RoomGitAction { .. } => Need::Paired,
         ArtifactsLoad { .. } => Need::Paired,
@@ -164,7 +165,7 @@ pub fn event_needs(event: &HostEvent) -> Need {
     match event {
         HostEvent::ThreadCatalogChanged {} => Need::Paired,
         HostEvent::AssistantTasksChanged { .. } => Need::Paired,
-        HostEvent::PersonalChanged { .. } => Need::Paired,
+        HostEvent::UiNavigate { .. } | HostEvent::PersonalStream { .. } | HostEvent::PersonalChanged { .. } => Need::Paired,
         HostEvent::RoomRunnerChanged { .. } => Need::Paired,
         HostEvent::Room { .. } => Need::Paired,
         HostEvent::PtyData { .. } | HostEvent::PtyExit { .. } | HostEvent::PtyRenamed { .. } => Need::Paired,
@@ -409,6 +410,7 @@ pub fn access_effect(command: &Command) -> AccessEffect {
         RoomReplyDecision { .. } | RoomReplyDecisionDismiss { .. } | SettingsReplySuggestionsSet { .. } => None,
         RoomThreadGitAction { .. } | RoomGitAction { .. } => None,
         // A pull request's card in an assistant's conversation and its Ship it tap: a merge, never an access level.
+        PersonalAdminTrustSet { .. } | PersonalAdminExecute { .. } | PersonalAdminUndo { .. } => Raises,
         PersonalShipOffers { .. } | PersonalShip { .. } => None,
         ExportThread { .. } => None,
         SaveAttachment { .. } => None,
@@ -616,6 +618,9 @@ pub(crate) mod tests {
             ("room_diff", true, json!({ "id": "mine" })),
             ("room_git_status", true, json!({ "id": "mine" })),
             ("room_reply_decision", true, json!({ "id": "mine" })),
+            ("personal_admin_trust_set", true, json!({"assistantId":"a","trust":"readOnly"})),
+            ("personal_admin_execute", true, json!({"assistantId":"a","tool":"app.agent.list","args":{}})),
+            ("personal_admin_undo", true, json!({"assistantId":"a","receiptId":"ar-1"})),
             ("personal_ship_offers", true, json!({ "assistantId": "asst-1" })),
             ("personal_ship", true, json!({ "assistantId": "asst-1", "pr": 84, "repo": "test/repo", "head": "abc" })),
             ("room_reply_decision_dismiss", true, json!({ "id": "mine", "key": "test/repo|mine|7|merge|abc" })),
@@ -809,6 +814,8 @@ pub(crate) mod tests {
         vec![
             (HostEvent::ThreadCatalogChanged {}, true),
             (HostEvent::AssistantTasksChanged { workspace_id: "w".into(), revision: 1 }, true),
+            (HostEvent::UiNavigate { target: apex_host::personal_admin::UiTarget::Settings { hub: None }, assistant_id: None }, true),
+            (HostEvent::PersonalStream { assistant_id: "a".into(), event_id: "e".into(), kind: "text".into(), text: Some("hello".into()), receipt: None }, true),
             (HostEvent::PersonalChanged { assistant_id: "asst-1".into(), revision: 1 }, true),
             (HostEvent::RoomRunnerChanged { room: "mine".into(), snapshot: None }, true),
             (HostEvent::Room { room: "mine".into(), event: RoomEvent::TurnStarted { id: ParticipantId::new("null") }, recovery_seq: None }, true),

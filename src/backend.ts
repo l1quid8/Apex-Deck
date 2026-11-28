@@ -50,6 +50,8 @@ export interface Backend {
   onAssistantTasksChanged?(cb: (payload: unknown) => void): Promise<Unlisten>;
   onSessionChanged?(cb: (session: AppSession) => void): Promise<Unlisten>;
   onThreadCatalogChanged?(cb: () => void): Promise<Unlisten>;
+  onAssistantNavigate?(cb: (event: import('./generated/protocol').HostEvents['ui-navigate']) => void): Promise<Unlisten>;
+  onAssistantStream?(cb: (event: import('./generated/protocol').HostEvents['personal-stream']) => void): Promise<Unlisten>;
   /** settings.json, beside the session file; settings.ts reads it. */
   settingsLoad(): Promise<unknown>;
   settingsSave(settings: unknown): Promise<void>;

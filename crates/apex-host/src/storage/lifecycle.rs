@@ -125,6 +125,12 @@ impl Store {
     }
     /// `add` is the only action allowed to restore an explicitly removed folder.
     pub fn change_project(&self, path: String, name: Option<String>, action: &str) -> Result<ProjectEntry, String> {
+        self.change_project_checked(path, name, action, false, None).map(|(applied, _)| applied)
+    }
+    /// Capture the previous project and check an optional receipt revision under
+    /// the same write gate as the edit. Other catalog rows keep their revisions.
+    pub(crate) fn change_project_checked(&self, path: String, name: Option<String>, action: &str, strict: bool,
+        expected_revision: Option<u64>) -> Result<(ProjectEntry, Option<ProjectEntry>), String> {
         if !Path::new(&path).is_absolute() { return Err("Project folder must be an absolute path.".into()); }
         let path = if action == "add" {
             let real = std::fs::canonicalize(&path).map_err(|e|format!("Cannot add project folder: {e}"))?;
@@ -135,6 +141,19 @@ impl Store {
         if name.as_ref().is_some_and(|s|s.is_empty()) { return Err("Project name cannot be blank.".into()); }
         let _guard = self.writes.lock().unwrap();
         let mut state = self.seeded_lifecycle(&self.chat_list()?)?;
+        let previous = state.projects.get(&path).cloned();
+        if expected_revision.is_some_and(|expected| previous.as_ref().map(|p| p.revision) != Some(expected)) {
+            return Err("Project changed after this action".into());
+        }
+        if strict {
+            let active = previous.as_ref().is_some_and(|p| !p.removed);
+            match action {
+                "add" if active => return Err("This project is already present".into()),
+                "remove" | "rename" if !active => return Err("This project is no longer present".into()),
+                "add" | "remove" | "rename" => {},
+                _ => return Err("Unknown project operation".into()),
+            }
+        }
         if action == "rename" && !state.projects.contains_key(&path) { return Err("Project no longer exists. Add it first.".into()); }
         let row = state.projects.entry(path.clone()).or_insert_with(||ProjectEntry {name:folder_name(&path),path,removed:false,revision:0,aliases:vec![]});
         if action == "rename" && row.removed { return Err("Project was removed. Add it before renaming.".into()); }
@@ -143,7 +162,7 @@ impl Store {
         row.revision = row.revision.checked_add(1).ok_or("Project revision exhausted.")?;
         let row = row.clone();
         self.write_held(&self.root.join("lifecycle-v1.json"), &state)?;
-        Ok(row)
+        Ok((row, previous))
     }
     /// Overlay host metadata without replacing layout or another host's records.
     pub(crate) fn reconcile_lifecycle_session(&self, session: &mut Value) -> Result<(), String> {

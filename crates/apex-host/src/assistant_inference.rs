@@ -24,12 +24,14 @@ pub(crate) async fn reply(config: ParticipantConfig, request: TurnRequest, attac
     let participant=if computer {apex_adapters::build_computer_assistant(config,&context)?} else {apex_adapters::build_assistant(config,&context)?};
     use std::sync::atomic::{AtomicBool,Ordering::Relaxed};
     let (used,text_only)=(AtomicBool::new(false),AtomicBool::new(false));
+    let admin=request.admin.clone();
     let reply=tokio::time::timeout(std::time::Duration::from_secs(limit),participant.respond_with_progress(request,&|update| {
         // These are the turn's only tools, so any step but thinking is one of them.
         if let apex_core::Progress::Work(step)=update {
             if step.kind!=apex_core::work_steps::StepKind::Thinking {used.store(true,Relaxed);}
             if step.key==crate::personal_worker::TEXT_ONLY_STEP {text_only.store(true,Relaxed);}
         }
+        if let Some(admin)=&admin {admin.report(update);}
     }))
         .await.map_err(|_|"The assistant provider timed out. You can retry or select another provider.".to_string())?
         .map_err(|error|error.to_string())?;

@@ -25,6 +25,8 @@ export type AssistantProjectsProps = {
   compact?: boolean;
   /** Controls project management only. Details and dialogs remain independent. */
   managementOpen?: boolean;
+  assignmentRequest?: number | null;
+  onAssignmentHandled?: () => void;
   /** A host-qualified assistant consumes each creation click once across remounts. */
   newTaskRequest?: number;
   /** Chat asked for the Delegate form; cleared through onDelegateHandled so it opens once. */
@@ -42,7 +44,7 @@ export type AssistantProjectsProps = {
 const id = () => crypto.randomUUID();
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 const consumedCreationRequests = new Map<string,number>();
-export function AssistantProjects({lane,backend,projects,availableProjects=projects,unavailableProjects=[],taskScopes,profiles=[],onEnsureCoordinator,onCreateWorkerThread,projectChats,onWatchChanged,onOpenProject,onOpenNotebook,onOpenThread,compact=false,managementOpen=true,newTaskRequest=0,delegateRequest=null,onDelegateHandled,focusTask=null,onFocusHandled,onDetailChange,detailBackLabel='Projects',onDetailBack,onKeepThread}: AssistantProjectsProps) {
+export function AssistantProjects({lane,backend,projects,availableProjects=projects,unavailableProjects=[],taskScopes,profiles=[],onEnsureCoordinator,onCreateWorkerThread,projectChats,onWatchChanged,onOpenProject,onOpenNotebook,onOpenThread,compact=false,managementOpen=true,assignmentRequest=null,onAssignmentHandled,newTaskRequest=0,delegateRequest=null,onDelegateHandled,focusTask=null,onFocusHandled,onDetailChange,detailBackLabel='Projects',onDetailBack,onKeepThread}: AssistantProjectsProps) {
   const record = lane.assistant;
   const [dynamic,setDynamic] = useState<{ownerKey:string;scopes:AssistantProjectScope[]}>({ownerKey:'',scopes:[]});
   const [reviewRevision,setReviewRevision] = useState<number|null>(null);
@@ -182,6 +184,12 @@ export function AssistantProjects({lane,backend,projects,availableProjects=proje
     setDynamic(before=>({ownerKey,scopes:[...(before.ownerKey===ownerKey?before.scopes:[]).filter(item=>projectIdentityKey(item.project)!==projectIdentityKey(project)),scope]}));
     setSnapshots(before=>({...before,[projectIdentityKey(project)]:snapshot}));
   }
+  useEffect(() => {
+    if (!assignmentRequest || !record || offline || busy || !lane.configureWorkspace) return;
+    openAssignments();
+    onAssignmentHandled?.();
+  }, [assignmentRequest, record, offline, busy, lane.configureWorkspace, onAssignmentHandled]);
+
   function openAssignments() {
     if(!record||offline||!lane.configureWorkspace)return;
     const base=grantRecord&&grantRecord.id===record.id&&grantRecord.hostId===record.hostId&&grantRecord.revision>record.revision?grantRecord:record;

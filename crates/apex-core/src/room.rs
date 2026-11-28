@@ -1431,6 +1431,7 @@ impl Room {
             .cloned()
             .collect();
         let mut request = TurnRequest {
+            admin:None,
             computer: None,
             effort_override: None,
             access: Some(participant.config().access),

@@ -46,6 +46,8 @@ export function commandBackend(transport: Transport, shell: Shell): Backend {
     sessionSave: (session) => call("session_save", { session }),
     onAssistantTasksChanged: (cb) => transport.listen("assistant-tasks-changed", cb),
     onSessionChanged: (cb) => transport.listen<AppSession>("session-changed", cb),
+    onAssistantNavigate: cb => transport.listen("ui-navigate", cb),
+    onAssistantStream: cb => transport.listen("personal-stream", cb),
     onThreadCatalogChanged: (cb) => transport.listen("thread-catalog-changed", cb),
     settingsLoad: () => call<unknown>("settings_load"),
     settingsSave: (settings) => call("settings_save", { settings }),

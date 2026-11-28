@@ -506,7 +506,7 @@ impl crate::host::Host {
             let mut draft = current.clone();
             draft.counters.event += 1;
             let event_id = format!("pe-{}", draft.counters.event);
-            let event = PersonalEvent { id:event_id.clone(),request_id:request_id.clone(),source:EventSource::Human {text:input.brief.clone(), view_context:None},received_at:crate::personal::now(),state:crate::personal::EventState::Done,attempts:0,error:None,spend_approved:false,computer_started:false, saved_reply: None };
+            let event = PersonalEvent { id:event_id.clone(),request_id:request_id.clone(),source:EventSource::Human {text:input.brief.clone(), view_context:None},received_at:crate::personal::now(),state:crate::personal::EventState::Done,attempts:0,error:None,spend_approved:false,computer_started:false, admin_started:false, saved_reply: None };
             draft.post("human", "chat", input.brief.clone(), None, Some(event_id.clone()), event.received_at);
             draft.events.push(event.clone());
             let mut checked = input.clone(); checked.source_event_id=event_id.clone();

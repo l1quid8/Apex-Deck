@@ -191,6 +191,9 @@ pub enum Command {
     RoomReplyDecisionDismiss { id: String, key: String },
     /// Pull request cards under an assistant's recent replies.
     PersonalShipOffers { assistant_id: String },
+    PersonalAdminTrustSet { assistant_id: String, trust: crate::personal_admin::AdminTrustTier },
+    PersonalAdminExecute { assistant_id: String, #[serde(default)] event_id: Option<String>, #[serde(flatten)] call: crate::personal_admin::AdminToolCall },
+    PersonalAdminUndo { assistant_id: String, receipt_id: String },
     /// The Ship it tap on such a card, for the commit it showed.
     PersonalShip { assistant_id: String, pr: u64, repo: String, head: String },
     RoomThreadGitAction { id: String, action: crate::thread_git::ThreadGitAction },
@@ -392,7 +395,7 @@ impl Command {
             | PersonalConfigure { .. } | PersonalPermissionSet { .. } | PersonalRuleAdd { .. } | PersonalRuleRemove { .. } | PersonalMemoryAdd { .. }
             | PersonalMemoryCorrect { .. } | PersonalMemoryForget { .. } | PersonalMachineLink { .. } | PersonalMachineUnlink { .. } | PersonalMachineClaim { .. }
             | PersonalMachineAllow { .. } | PersonalBrowserSession { .. } | ComputerSetup { .. } | ComputerSetEnabled { .. } | ComputerSetAppPrompts { .. } | ComputerSetActionLabels { .. }
-            | RoomThreadGitAction { .. } | PersonalShip { .. } | RoomFork { .. } | RoomMount { .. } | ChatPromote { .. } | RoomForgetAllowed { .. } => Policy::PROTECTED,
+            | RoomThreadGitAction { .. } | PersonalShip { .. } | PersonalAdminTrustSet { .. } | PersonalAdminExecute { .. } | PersonalAdminUndo { .. } | RoomFork { .. } | RoomMount { .. } | ChatPromote { .. } | RoomForgetAllowed { .. } => Policy::PROTECTED,
             // Search returns text from every thread, so opening it needs the
             // same proof as acting for the person. It is not on the terminal
             // surface: a same-user socket peer on Linux (SSH, the terminal
@@ -966,6 +969,9 @@ impl Host {
             RoomGitStatus { id } => reply(self.room_git_status(id).await?),
             RoomReplyDecision { id } => reply(self.room_reply_decision(id).await?),
             RoomReplyDecisionDismiss { id, key } => reply(self.room_reply_decision_dismiss(id, key)?),
+            PersonalAdminTrustSet { assistant_id, trust } => reply(self.personal_admin_set_trust(&assistant_id, trust).await?),
+            PersonalAdminExecute { assistant_id, event_id, call } => reply(self.personal_admin_execute(&assistant_id, event_id, call).await?),
+            PersonalAdminUndo { assistant_id, receipt_id } => reply(self.personal_admin_undo(&assistant_id, &receipt_id).await?),
             PersonalShipOffers { assistant_id } => reply(self.personal_ship_offers(assistant_id).await?),
             PersonalShip { assistant_id, pr, repo, head } => reply(self.personal_ship(assistant_id, pr, repo, head).await?),
             RoomThreadGitAction { id, action } => reply(self.room_thread_git_action(id, action).await?),
@@ -1452,7 +1458,7 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 256);
+        assert_eq!(names.len(), 259);
         for name in [
             "session_save_layout",
             "search_open",

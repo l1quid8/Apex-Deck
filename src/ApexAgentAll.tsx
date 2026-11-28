@@ -77,7 +77,7 @@ function evidenceList(items: MonitorEvidence[], open?: (item: MonitorEvidence) =
 }
 
 /** One conversation across every watched project. Replies go to the project they name, or the last one discussed. */
-export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp, onClose, onHide, onCustomize, clearedAt = 0, onClear, fullScreen = false, onFullScreen, offlineWorkspaceIds = [], onOpenEvidence, onOverview, overviewEntries = [], tasks, taskNodes, filterWorkspaceId = null, onClearFilter, taskContext = null, onClearTaskContext, personal = null, personalLaneId = 'personal', onNavigatePanel, embedded = false, phone = false, assistantAvatar, draftKey, onReact, saveAttachment, pickAttachmentFolder, pickFolderUnavailableReason, serversByLane = {}, serverStatusByLane = {}, onCommand, landingTexture, focusTask = null, onFocusHandled, voiceBackend, voiceSettings, onVoiceSettings, voiceHeader, onOpenBrowser, onVoiceFocus, onOpenProjectTask, onDelegateTask, delegatedTasks=[] }: {
+export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp, onClose, onHide, onCustomize, clearedAt = 0, onClear, fullScreen = false, onFullScreen, offlineWorkspaceIds = [], onOpenEvidence, onOverview, overviewEntries = [], tasks, taskNodes, filterWorkspaceId = null, onClearFilter, taskContext = null, onClearTaskContext, personal = null, personalLaneId = 'personal', onNavigatePanel, embedded = false, phone = false, assistantAvatar, draftKey, onReact, saveAttachment, pickAttachmentFolder, pickFolderUnavailableReason, serversByLane = {}, serverStatusByLane = {}, onCommand, landingTexture, focusTask = null, onFocusHandled, voiceBackend, voiceSettings, onVoiceSettings, voiceHeader, onOpenBrowser, onVoiceFocus, onOpenProjectTask, onDelegateTask, onAdminTarget, delegatedTasks=[] }: {
   /** The personal assistant on its durable host, shown as one more lane in this conversation. */
   delegatedTasks?: AssistantTask[];
   onVoiceFocus?: () => void;
@@ -91,6 +91,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
   onOpenBrowser?: () => void;
   personal?: PersonalLane | null;
   personalLaneId?: string;
+  onAdminTarget?: (target: import("./generated/protocol").UiTarget) => void;
   onNavigatePanel?: (section: 'memory' | 'settings' | 'activity') => void;
   embedded?: boolean;
   /** Compact touch layout used by the iOS assistant overlay. */
@@ -141,6 +142,18 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
   const names = useMemo(() => Object.fromEntries(workspaces.map((workspace) => [workspace.id, workspace.name])), [workspaces]);
   const watched = (embedded ? [] : workspaces).filter((workspace) => monitors.some((monitor) => monitor.workspaceId === workspace.id));
   const assistant = personal?.assistant ?? null;
+  const [adminWork,setAdminWork]=useState<{owner:string;eventId:string;label:string}|null>(null);
+  useEffect(()=>{
+    let live=true;
+    const owner=assistant?.id;
+    const subscription=voiceBackend?.onAssistantStream?.(event=>{
+      if(!live || event.assistantId!==owner)return;
+      if(event.kind==='work'&&event.text)setAdminWork({owner,eventId:event.eventId,label:event.text});
+      if(event.kind==='receipt')setAdminWork(null);
+    });
+    return ()=>{live=false;void subscription?.then(stop=>stop());};
+  },[voiceBackend,assistant?.id]);
+
   const pendingReplies=(assistant?.events??[]).filter(e=>e.source?.kind==='human'&&['received','processing'].includes(e.state));
   const pendingReply=pendingReplies.find(e=>e.state==='processing')??pendingReplies[0];
   const personalTag = personal ? `${personal.name} · ${personal.hostName}` : '';
@@ -757,12 +770,28 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
           const personalBubble = `${phone ? "ph-msg " : ""}assistant-chat-message ${message.role} apex-agent-personal${item.role === 'system' ? ' apex-agent-app-note' : ''}${kindClass}`;
           const attachedHandoffs = item.role === 'assistant' ? handoffTasks.filter(task => handoffMessageIds.get(task.id) === item.id) : [];
           const plannedJob = item.role === 'assistant' && item.kind === 'update' && item.taskId ? delegatedTasks.find((job) => job.id === item.taskId) : undefined;
+          const watchDecision = item.role === 'assistant' && assistant?.responsibilities?.find(watch =>
+            watch.state === 'watching' && watch.decision?.status === 'pending' && watch.decision.messageId === item.id
+          )?.decision;
           const personalBody = <>
             <small className="apex-agent-message-meta">{embedded&&item.role==='assistant'&&assistantAvatar}{item.role === 'human' ? 'You' : item.role === 'system' ? 'App' : personal!.name}{lanes.length > 1 && <> · <button type="button" className="apex-agent-project-tag" onClick={() => { setFocus(PERSONAL); setDraftFallback(PERSONAL); }} title={`Reply to ${personal!.name}`}>{personal!.hostName}</button></>}{item.legacy && <LegacyBadge />}{item.kind === 'helper' && <span className="apex-agent-helper-label">Helper</span>}{embedded&&item.role==='assistant'&&<time>{clock(item.at)}</time>}</small>
             {attachedHandoffs.length ? attachedHandoffs.map((job, index) => <span key={job.id}>{handoffPill(job, index === 0 ? message.text : '')}<HandoffTaskQuestion task={job} lane={personal!} /></span>) : item.role === 'human' ? <p>{message.text}</p> : <div className={`apex-agent-message-body${phone ? " ph-md" : ""}`}><Markdown text={message.text} onOpen={openMessageLink} /></div>}
             {item.taskProblem && task && <button type="button" className="apex-agent-task-link plain dot-link" onClick={() => openTask(personalTaskKey(assistant!.hostId, task.id, personal?.ref?.assistantId))}>Review task</button>}
             {item.kind === 'delegation_failed' && onDelegateTask && <button type="button" className="assistant-chat-action" onClick={onDelegateTask}>Delegate a task</button>}
             {plannedJob && <button type="button" className="assistant-chat-action" onClick={() => onOpenProjectTask?.(projectTaskKey(plannedJob.owner.hostId, plannedJob.owner.workspaceId, plannedJob.id))}>{plannedJob.status === 'proposed' ? 'Review plan' : 'Open task'}</button>}
+            {watchDecision && personal?.answerResponsibility && <div className="dot-actions">
+              {[`Ask ${watchDecision.workerName}`, 'Wait'].map(answer =>
+                <button type="button" key={answer} disabled={busy || personal.offline || assistant?.paused}
+                  onClick={() => void run(() => personal.answerResponsibility!(watchDecision.messageId, answer))}>{answer}</button>
+              )}
+            </div>}
+            {item.role==='human' && adminWork?.owner===assistant?.id && adminWork && adminWork.eventId===item.eventId && !assistant?.messages.some(m=>m.role==='assistant'&&m.eventId===item.eventId) && <small role="status">{adminWork.label}</small>}
+            {item.role === 'human' && (assistant?.adminReceipts ?? []).filter(r => r.eventId && r.eventId === item.eventId).map(r =>
+              <div className="dot-actions" key={r.id}>
+                <span>{r.summary}</span>
+                {r.uiTarget && onAdminTarget && <button onClick={() => onAdminTarget(r.uiTarget!)}>{r.uiTarget.kind === 'assignProjects' ? 'Assign project' : 'Open'}</button>}
+                {r.ok && r.undo && personal?.undoAdmin && <button disabled={busy || personal.offline || r.undoneAt != null} onClick={() => void run(async () => { await personal.undoAdmin!(r.id); })}>{r.undoneAt != null ? 'Undone' : 'Undo'}</button>}
+              </div>)}
             {item.role !== 'human' && shipOffers.offers.filter(offer => offer.messageId === item.id).map(offer => <ShipOfferCard key={offer.pr} offer={offer} lane={personal!} refresh={shipOffers.refresh} />)}
           </>;
           const personalActions = (item.role === 'human' || item.role === 'assistant') ? <ApexAgentMessageActions compact={phone} mine={item.role === 'human'} text={item.text} at={item.at} stateKey={messageStateKey(assistant!.hostId, PERSONAL, item.id)} onRetry={item.role === 'assistant' ? () => personal!.send(retryMessageText(item.text)) : undefined} onRevert={item.role === 'human' ? () => restoreMessage(PERSONAL, item.text) : undefined} reactions={item.reactions} disabled={busy || !!personal?.offline} onReply={!attachmentLane || attachmentLane === PERSONAL ? () => {
