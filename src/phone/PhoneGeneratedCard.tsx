@@ -43,7 +43,10 @@ export function PhoneGeneratedCard({ card, hostId, threadId, messageId, onDiscus
       });
     };
     const dispose = () => {
-      if (runId) void api?.dispose({runId}).catch(() => {});
+      if (runId) {
+        void api?.dispose({runId}).catch(() => {});
+        if (alive) setDiscussion("");
+      }
       runId = "";
       geometryKey = "";
     };

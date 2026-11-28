@@ -21,6 +21,11 @@ test('only the newest valid generated bot card is chosen for automatic opening',
   const counter = JSON.parse(readFileSync(new URL("./fixtures/generated-persistence-counter.json", import.meta.url), "utf8"));
   const complete = bot(6, counter);
   assert.equal(share.latestGeneratedCard([complete]).source, JSON.stringify(counter));
+  const pretty = JSON.stringify(counter, null, 2);
+  const multiline = { ...complete, text: fence(counter).replace(JSON.stringify(counter), pretty).replaceAll("\n", "\r\n") };
+  const candidate = share.latestGeneratedCard([multiline]);
+  assert.equal(candidate.seq, multiline.seq);
+  assert.equal(candidate.source, pretty);
   assert.equal(share.latestGeneratedCard([{...complete, text:complete.text.slice(0,-3)}]), null);
   assert.equal(share.latestGeneratedCardKey([{seq:1,speaker:{kind:'bot'},text:fence(card)+'\n'+fence({...card,cardId:'last'})}]),'1:last');
   assert.equal(share.latestGeneratedCardKey([{seq:1,speaker:{kind:'bot'},text:fence(card)+'\n'+fence({...card,title:'Duplicate identity'})}]),null);

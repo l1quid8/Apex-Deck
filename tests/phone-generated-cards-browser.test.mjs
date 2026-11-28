@@ -53,10 +53,13 @@ async function scenario() {
     await read("renderCard('host')");
     await read("new Promise(resolve => setTimeout(resolve, 250))");
     assert.equal(await read("mounts.length"), 1, "ordinary rerenders preserve the run");
+    await read("emitCard({runId:mounts[0].runId,type:'discuss',text:'Before scroll'})");
+    await until("document.querySelector('pre')?.textContent === 'Before scroll'");
     await read("document.querySelector('main').scrollTop=900");
     await until("disposals.includes(mounts[0].runId)");
     await read("document.querySelector('main').scrollTop=0");
     await until("mounts.length === 2");
+    assert.equal(await read("document.querySelector('.generated-discuss')"), null);
     assert.notEqual(await read("mounts[0].runId"), await read("mounts[1].runId"));
     await read("emitCard({runId:mounts[0].runId,type:'discuss',text:'Old'});emitCard({runId:mounts[1].runId,type:'discuss',text:'Current'})");
     await until("document.querySelector('pre')?.textContent === 'Current'");

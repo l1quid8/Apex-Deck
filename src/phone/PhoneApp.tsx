@@ -4628,7 +4628,7 @@ function ThreadView(props: {
                       }} /> : undefined} onOpen={(target) => { if (/^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} />
                 : undefined)} /></div>;
                 const saved = savedEntry(props.stepsIndex, message.seq);
-                return saved ? <SavedSteps key={`${props.link.id}:${props.paneId}:${message.seq}`} count={saved.count} todoCount={saved.todo_count} todoCompleted={saved.todo_completed} cached={props.loadedSteps.get(message.seq) ?? null} load={() => props.loadSteps(message.seq)} finalText={visibleReply(message.text)} renderText={renderText} renderFinalText={generatedCandidate && message.text.includes(generatedCandidate.source) ? text => renderText(text, true) : undefined} /> : renderText(visibleReply(message.text), true);
+                return saved ? <SavedSteps key={`${props.link.id}:${props.paneId}:${message.seq}`} count={saved.count} todoCount={saved.todo_count} todoCompleted={saved.todo_completed} cached={props.loadedSteps.get(message.seq) ?? null} load={() => props.loadSteps(message.seq)} finalText={visibleReply(message.text)} renderText={renderText} renderFinalText={generatedCandidate?.seq === message.seq ? text => renderText(text, true) : undefined} /> : renderText(visibleReply(message.text), true);
               })()}
               <PhonePictures paths={replyImages(message.text)} read={readPicture(person(message.speaker.id).display_name)} blocked={props.pictures.blocked} />
               {!foldedDecision && message.seq === decisionSeq && decisionCard}
