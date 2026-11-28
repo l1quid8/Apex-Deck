@@ -207,6 +207,7 @@ pub fn decide(facts: &Facts<'_>, dismissed: impl Fn(&str) -> bool) -> Option<Dec
     let ready = facts.ready;
     let fix = |w: &Workflow, kind, detail: String| git_card(facts.room, seq, w, kind, "fix", "Send the failed check to the builder?", Some("Ask agent to fix"), 1, Some(detail));
     let candidate = current.and_then(|w| match (&w.phase, &ready.checks) {
+        (Phase::Failed, Checks::Passed { .. }) if !w.local_check_failed => ship_card(facts.room, seq, w, ready),
         (_, Checks::Failed { .. }) if facts.watched => None,
         (Phase::Failed, _) if !facts.watched && !w.fix_requested => Some(fix(w, Kind::FixFailed, w.detail.clone())),
         (Phase::Ready | Phase::Cancelled | Phase::Blocked, Checks::Failed { pr, detail }) if !facts.watched && !w.fix_requested => {
@@ -440,6 +441,14 @@ mod tests {
             facts.watched = false;
             assert!(decide(&facts, |_| false).is_some());
         }
+    }
+
+    #[test]
+    fn successful_remote_rerun_restores_the_worker_merge_card() {
+        let mut w = workflow(Phase::Failed, false);
+        assert_eq!(decided(Mode::DecisionCard, Some(&w), PASSED, "Done.", &[]).unwrap().kind, Kind::Merge);
+        w.local_check_failed = true;
+        assert_eq!(decided(Mode::DecisionCard, Some(&w), PASSED, "Done.", &[]).unwrap().kind, Kind::FixFailed);
     }
 
     #[test]

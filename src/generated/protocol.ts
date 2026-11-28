@@ -1102,12 +1102,12 @@ export type Workflow = {
   fix_requested: boolean;
   generation: number;
   head: string;
-  local_check_failed?: boolean;
   /**
    * Files with local changes in the Mac's main folder that the update after
    * the merge left as they were.
    */
   kept_edits?: number;
+  local_check_failed?: boolean;
   phase: Phase;
   pr?: number | null;
   pushed: boolean;

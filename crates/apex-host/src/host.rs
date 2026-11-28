@@ -3950,7 +3950,7 @@ impl Host {
             }
             None => None,
         };
-        let asks = waiting.filter(|w| matches!(w.phase, Phase::Ready | Phase::Cancelled | Phase::Blocked) && head.as_deref() == Some(w.head.as_str()));
+        let asks = waiting.filter(|w| (matches!(w.phase, Phase::Ready | Phase::Cancelled | Phase::Blocked) || (w.phase == Phase::Failed && !w.local_check_failed)) && head.as_deref() == Some(w.head.as_str()));
         let ready = match asks {
             Some(w) => self.readiness_of(&id, w).await,
             None => Readiness::unknown(""),
