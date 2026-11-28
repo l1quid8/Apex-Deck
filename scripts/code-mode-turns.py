@@ -63,13 +63,23 @@ def run(args, files, prompt, arm):
         meter = root / "bin"
         meter.mkdir()
         (meter / name).symlink_to(Path(__file__).resolve().with_name("code-mode-provider-meter.py"))
+        (root / "installed-relay").symlink_to(Path(os.environ["APEX_DECK_BIN"]).resolve(strict=True))
+        relay = root / "study-relay"
+        shutil.copy2(Path(__file__).with_name("code-mode-study-relay.py"), relay)
         counters = root / "counters.jsonl"
-        env = {**os.environ, "STUDY_PROMPT": prompt, "STUDY_PROVIDER": provider,
+        env = {**os.environ, "APEX_DECK_BIN": str(relay), "STUDY_PROMPT": prompt, "STUDY_PROVIDER": provider,
                "STUDY_COUNTERS": str(counters), "PATH": str(meter) + os.pathsep + os.environ["PATH"]}
-        proc = subprocess.run([args.driver, args.family, args.model, arm, workspace, state],
-                              env=env,
-                              capture_output=True, text=True, check=True, timeout=210)
-        row = json.loads(proc.stdout)
+        try:
+            proc = subprocess.run([args.driver, args.family, args.model, arm, workspace, state],
+                                  env=env, capture_output=True, text=True, check=True, timeout=210)
+            row = json.loads(proc.stdout)
+        except (OSError, subprocess.SubprocessError, ValueError) as error:
+            # Keep partial relay evidence when the driver exits or times out.
+            row = {"result": {"error": str(error)}, "steps": []}
+        row["batch_traces"] = {
+            path.stem: [json.loads(line) for line in path.read_text().splitlines()]
+            for path in sorted(root.glob("batches-*.jsonl"))
+        }
         events = [json.loads(line) for line in counters.read_text().splitlines()] if counters.exists() else []
         for metric in ("claude_model_turns", "codex_usage_updates"):
             values = [e[metric] for e in events if metric in e]

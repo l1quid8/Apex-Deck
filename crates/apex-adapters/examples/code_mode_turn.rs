@@ -62,8 +62,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("relay executable missing".into());
     }
     let data_dir = PathBuf::from(state);
+    let backend = if family == "local_api" {
+        let port: u16 = std::env::var("STUDY_LOCAL_PORT")?.parse()?;
+        json!({"kind":"open_ai_compatible","base_url":format!("http://127.0.0.1:{port}/v1"),"model":model})
+    } else {
+        json!({"kind":"agent","tool":family,"model":model})
+    };
     let config: ParticipantConfig = serde_json::from_value(
-        json!({"id":"benchmark","display_name":"Benchmark","access":"read","backend":{"kind":"agent","tool":family,"model":model}}),
+        json!({"id":"benchmark","display_name":"Benchmark","access":"read","backend":backend}),
     )?;
     set_code_mode_enabled(&data_dir, enabled);
     let bot = build(
