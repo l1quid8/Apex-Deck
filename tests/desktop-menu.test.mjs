@@ -134,9 +134,11 @@ test('Electron builds both platform menus and dispatches their existing pane com
     app.on('will-quit', () => phase('will-quit'));
     app.on('quit', (_, code) => phase('quit', { code }));
     app.on('child-process-gone', (_, details) => phase('child-process-gone', details));
-    app.whenReady().then(() => {
+    app.whenReady().then(async () => {
       try {
         phase('ready');
+        let mainLoopTurnReached = false;
+        setTimeout(() => { mainLoopTurnReached = true; phase('main-loop-turn'); }, 0);
         for (const platform of ['darwin', 'win32']) {
           phase('building-menu', { templatePlatform: platform });
           const events = [];
@@ -162,6 +164,11 @@ test('Electron builds both platform menus and dispatches their existing pane com
         }
         phase('assertions-passed');
         console.log('Native menu construction and pane dispatch passed for both templates');
+        // Exiting in ready can take Electron 44's early teardown path. Wait
+        // one main-loop turn; keep the exit code and a single scenario attempt.
+        // https://github.com/electron/electron/issues/55011
+        await new Promise(resolve => setTimeout(resolve, 0));
+        assert.ok(mainLoopTurnReached, 'native exit must wait for the main message loop');
         phase('exit-requested', { code: 0 });
         app.exit(0);
       } catch (error) { phase('assertion-failed', { error: error.stack }); console.error(error.stack); app.exit(1); }
