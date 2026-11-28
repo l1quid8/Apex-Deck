@@ -10,7 +10,7 @@ const ENDPOINT: &str = "APEX_CODE_MODE_ENDPOINT";
 const TOKEN: &str = "APEX_CODE_MODE_TOKEN";
 const MAX: u64 = 131_072;
 pub(crate) const SERVER: &str = "apex-code-mode";
-pub(crate) const HINT: &str = "\nApex Code Mode is available through the apex-code-mode MCP server's deck_code_mode tool. For multi-file reads, use a compact forEach batch and filter the output to keep raw file contents out of context. Each operation still follows Deck permissions; declined operations must not be retried. This is a bounded JSON plan, not JavaScript.\n";
+pub(crate) const HINT: &str = "\nApex Code Mode is available through the apex-code-mode MCP server's deck_code_mode tool. Use ordinary tools when one search or one file answers the question. Use a compact batch for dependent operations or to reduce large intermediate results before they enter context. Each operation still follows Deck permissions; declined operations must not be retried. This is a bounded JSON plan, not JavaScript.\n";
 
 #[derive(Default)]
 pub(crate) struct Cancellation {
@@ -174,13 +174,13 @@ impl Launch {
         ]
     }
     pub fn claude_config(&self, helper: &Path) -> Value {
-        json!({"mcpServers":{SERVER:{"type":"stdio","command":helper,"args":[RELAY_ARG]}}})
+        json!({"mcpServers":{SERVER:{"type":"stdio","alwaysLoad":true,"command":helper,"args":[RELAY_ARG]}}})
     }
     /// Sent on Claude's private control stream before submitting the current turn.
     /// A fresh relay process receives only this turn's bridge credentials.
     pub fn claude_dynamic_servers(&self, helper: &Path) -> Value {
         let env: std::collections::BTreeMap<_, _> = self.env().into_iter().collect();
-        json!({SERVER:{"type":"stdio","command":helper,"args":[RELAY_ARG],"env":env}})
+        json!({SERVER:{"type":"stdio","alwaysLoad":true,"command":helper,"args":[RELAY_ARG],"env":env}})
     }
 
     pub fn codex_flags(&self, helper: &Path) -> Vec<String> {
@@ -478,6 +478,9 @@ mod tests {
             let catalog: Value =
                 serde_json::from_str(&line(&mut reader).await.unwrap().unwrap()).unwrap();
             assert_eq!(catalog["result"]["tools"][0]["name"], "deck_code_mode");
+            let helper = Path::new("/helper");
+            assert_eq!(bridge.launch.claude_config(helper)["mcpServers"][SERVER]["alwaysLoad"], true);
+            assert_eq!(bridge.launch.claude_dynamic_servers(helper)[SERVER]["alwaysLoad"], true);
             let flags = bridge.launch.codex_flags(Path::new("/Apex Deck/helper"));
             assert!(!flags.join(" ").contains(&bridge.launch.token));
             assert!(!bridge
