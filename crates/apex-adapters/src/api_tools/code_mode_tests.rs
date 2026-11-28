@@ -5,6 +5,31 @@ fn plan(stages: Value, output: Value) -> Value {
 }
 
 #[tokio::test]
+async fn code_mode_advertised_invoice_example_runs_as_written() {
+    let dir = scratch("code-mode-invoice-example");
+    for name in ["jan.txt", "feb.txt"] {
+        std::fs::write(dir.join(name), concat!(
+            "heading\n",
+            r#"INVOICE {"state":"paid","cents":19}"#, "\n",
+            r#"INVOICE {"state":"open","cents":80}"#, "\n",
+        )).unwrap();
+    }
+    let tools = toolbox(&dir);
+    let answers = approver(Decision::Reject);
+    let progress = |_: Progress<'_>| {};
+    let mut turn = Turn::new(&tools, Access::Read, false, Access::Read, &answers, &progress);
+    let definition = code_mode::definition();
+    let description = definition["function"]["description"].as_str().unwrap();
+    let start = description.rfind(r#"{"stages":"#).unwrap();
+    let example = serde_json::from_str(&description[start..]).unwrap();
+    let result = turn.run(&call("deck_code_mode", example)).await;
+    let report: Value = serde_json::from_str(&result.text).unwrap();
+    assert_eq!(report["status"], "ok");
+    assert_eq!(report["output"], json!({"paid":2,"cents":38}));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn global_off_hides_code_mode_and_refuses_stale_calls_without_affecting_reads() {
     let dir = scratch("code-mode-global-off");
     std::fs::create_dir_all(dir.join("saved-chats-v1")).unwrap();
