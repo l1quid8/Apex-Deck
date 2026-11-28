@@ -18,24 +18,40 @@ with subprocess.Popen([helper, *sys.argv[1:]], stdin=subprocess.PIPE, stdout=sub
     ids = set()
     lock = threading.Lock()
     with (root / f"batches-{os.getpid()}.jsonl").open("x", buffering=1) as log:
+        def record(line, incoming):
+            frame = json.loads(line)
+            if not isinstance(frame, dict) or type(frame.get("id")) not in (int, str):
+                return
+            rpc_id = frame["id"]
+            params = frame.get("params")
+            with lock:
+                if incoming:
+                    if (frame.get("method") != "tools/call" or not isinstance(params, dict)
+                            or params.get("name") != "deck_code_mode"):
+                        return
+                    ids.add(rpc_id)
+                    entry = {"id": rpc_id, "plan": params.get("arguments")}
+                elif rpc_id in ids:
+                    ids.remove(rpc_id)
+                    entry = {"id": rpc_id, "reply": frame.get("result"), "error": frame.get("error")}
+                else:
+                    return
+                print(json.dumps(entry), file=log)
+
         def forward(source, dest, incoming):
-            for line in source:
-                try:
-                    frame = json.loads(line)
-                except (UnicodeDecodeError, ValueError):
-                    frame = None
-                if isinstance(frame, dict):
-                    with lock:
-                        rpc_id = frame.get("id")
-                        if incoming and frame.get("method") == "tools/call" and frame.get("params", {}).get("name") == "deck_code_mode":
-                            ids.add(rpc_id)
-                            print(json.dumps({"id": rpc_id, "plan": frame["params"].get("arguments")}), file=log)
-                        elif not incoming and rpc_id in ids:
-                            ids.remove(rpc_id)
-                            print(json.dumps({"id": rpc_id, "reply": frame.get("result"), "error": frame.get("error")}), file=log)
-                dest.write(line)
-                dest.flush()
-            dest.close()
+            try:
+                for line in source:
+                    try:
+                        record(line, incoming)
+                    except (OSError, UnicodeError, ValueError, RecursionError) as error:
+                        print(f"Study trace skipped a frame: {error}", file=sys.stderr)
+                    dest.write(line)
+                    dest.flush()
+            except BrokenPipeError:
+                pass
+            finally:
+                if incoming:
+                    dest.close()
 
         threading.Thread(target=forward, args=(sys.stdin.buffer, child.stdin, True), daemon=True).start()
         forward(child.stdout, sys.stdout.buffer, False)

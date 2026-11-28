@@ -47,6 +47,20 @@ def fixture(seed, task):
     return files, prompt, {"count": len(rows), "total": sum(r["delay"] for r in rows)}
 
 
+def read_events(path, errors):
+    records = []
+    with path.open("rb") as stream:
+        for number, line in enumerate(stream, 1):
+            try:
+                event = json.loads(line)
+                if not isinstance(event, dict):
+                    raise ValueError("expected an event object")
+                records.append(event)
+            except (UnicodeError, ValueError) as error:
+                errors.append(f"{path.name} line {number}: {error}")
+    return records
+
+
 def run(args, files, prompt, arm):
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -76,11 +90,14 @@ def run(args, files, prompt, arm):
         except (OSError, subprocess.SubprocessError, ValueError) as error:
             # Keep partial relay evidence when the driver exits or times out.
             row = {"result": {"error": str(error)}, "steps": []}
+        capture_errors = []
         row["batch_traces"] = {
-            path.stem: [json.loads(line) for line in path.read_text().splitlines()]
+            path.stem: read_events(path, capture_errors)
             for path in sorted(root.glob("batches-*.jsonl"))
         }
-        events = [json.loads(line) for line in counters.read_text().splitlines()] if counters.exists() else []
+        events = read_events(counters, capture_errors) if counters.exists() else []
+        if capture_errors:
+            row["capture_errors"] = capture_errors
         for metric in ("claude_model_turns", "codex_usage_updates"):
             values = [e[metric] for e in events if metric in e]
             row[metric] = sum(values) if values else None
