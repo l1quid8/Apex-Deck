@@ -245,6 +245,19 @@ struct GeneratedUiRuntimePolicy {
     adapter_version: String,
     security_policy_version: String,
     verified_runtime_builds: Vec<GeneratedUiRuntimeBuild>,
+    // The iPhone consumes this list. Parsing it here keeps the shared schema strict.
+    #[serde(default, rename = "verifiedWebKitBuilds")]
+    _verified_webkit_builds: Vec<GeneratedUiWebKitBuild>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[allow(dead_code)] // These fields validate the registry, not desktop client claims.
+struct GeneratedUiWebKitBuild {
+    arch: String,
+    device_class: String,
+    os_version: String,
+    app_build: String,
 }
 
 #[derive(Deserialize)]
@@ -486,6 +499,19 @@ mod tests {
     #[test]
     fn registry_parses() {
         assert!(GENERATED_UI_RUNTIME_POLICY.is_some(), "shared/generated-ui-runtime.json must match GeneratedUiRuntimePolicy");
+    }
+
+    #[test]
+    fn webkit_registry_entries_are_validated_separately_from_electron_builds() {
+        let mut registry: serde_json::Value = serde_json::from_str(include_str!("../../../shared/generated-ui-runtime.json")).unwrap();
+        registry["verifiedRuntimeBuilds"] = serde_json::json!([]);
+        registry["verifiedWebKitBuilds"] = serde_json::json!([{
+            "arch": "arm64", "deviceClass": "device", "osVersion": "26.0.0", "appBuild": "59"
+        }]);
+        let policy: GeneratedUiRuntimePolicy = serde_json::from_value(registry.clone()).unwrap();
+        assert!(policy.verified_runtime_builds.is_empty());
+        registry["verifiedWebKitBuilds"][0]["appBuild"] = serde_json::json!(59);
+        assert!(serde_json::from_value::<GeneratedUiRuntimePolicy>(registry).is_err());
     }
 
     #[test]
