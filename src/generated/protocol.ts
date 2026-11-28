@@ -525,7 +525,7 @@ export type MessageOrigin = {
   seq: number;
 };
 
-export type Mode = "decision_card" | "off";
+export type Mode = "decision_card" | "next_steps" | "off";
 
 /** One suggestion: a short label for the button and the prompt it sends. */
 export type NextStep = {

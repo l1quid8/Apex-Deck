@@ -3017,7 +3017,7 @@ export function PhoneApp() {
             }}
             // Questions wait above the composer; next steps follow the reply that offered them, as on the Mac.
             steps={(() => {
-              const view = formView(openRoom?.asks);
+              const view = formView(openRoom?.asks, 3);
               return view.kind === "steps" && openRoom ? { offer: view.offer, onStep: (step: NextStep, by: string) => { void sendStep(step, by, { id: openRoom.id, hostId: openRoom.hostId }); } } : null;
             })()}
             form={<QuestionForm phone view={questionOnly(formView(openRoom?.asks))} nameOf={(pid) => openRoom?.participants.find((p) => p.id === pid)?.display_name ?? pid}
@@ -3097,8 +3097,7 @@ export function PhoneApp() {
                 const host = phoneHost(link.id);
                 return link.status === "online" && host?.supports("reply_suggestions_v1") &&
                   <div className="ph-srow ph-preference ph-suggestion-setting" key={link.id}>
-                    <span className="ph-grow"><strong>Suggestions after a reply</strong><small>{link.name} · Shared with desktop</small></span>
-                    <ReplySuggestionsSetting backend={host.backend} />
+                    <ReplySuggestionsSetting backend={host.backend} hostName={link.name} />
                   </div>;
               })}
               <LockRow />
@@ -4152,7 +4151,7 @@ function ThreadView(props: {
   const decisionCard = decisionBackend && offer?.decision && canShowDecision && (pendingMerge || (!busy && decisionSeq !== null)) &&
     <ReplyDecisionCard key={offer.decision.key} backend={decisionBackend} room={props.paneId}
       offer={offer} refresh={refresh} focused={false} report={props.onDecisionResult} />;
-  const showList = !props.suggestionHost || (offer?.mode === "decision_card" && !offer.decision);
+  const showList = !props.suggestionHost || (offer && offer.mode !== "off" && !offer.decision);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const composerHistory = useComposerHistory(
     JSON.stringify([props.link.id, props.paneId]), props.draft.text,
@@ -4607,7 +4606,7 @@ function ThreadView(props: {
               <PhonePictures paths={replyImages(message.text)} read={readPicture(person(message.speaker.id).display_name)} blocked={props.pictures.blocked} />
               {!foldedDecision && message.seq === decisionSeq && decisionCard}
               {showList && props.steps && message.speaker.kind === "bot" && props.steps.offer.by === message.speaker.id && newestReply.get(message.speaker.id) === message.seq &&
-                <ReplyNextSteps key={`${props.link.id}:${props.paneId}:${message.seq}:${JSON.stringify(props.steps.offer.steps)}`} offer={props.steps.offer} onStep={fillStep} />}
+                <ReplyNextSteps key={`${props.link.id}:${props.paneId}:${message.seq}:${JSON.stringify(props.steps.offer.steps)}`} limit={offer?.mode === "next_steps" ? 3 : 1} offer={props.steps.offer} onStep={fillStep} />}
             </div>
             {actionsFor(message, message.text)}
           </section>

@@ -27,6 +27,7 @@ const KEPT: usize = 64;
 #[serde(rename_all = "snake_case")]
 pub enum Mode {
     DecisionCard,
+    NextSteps,
     Off,
 }
 impl Mode {
@@ -40,12 +41,14 @@ impl Mode {
     pub fn as_str(self) -> &'static str {
         match self {
             Mode::DecisionCard => "decision_card",
+            Mode::NextSteps => "next_steps",
             Mode::Off => "off",
         }
     }
     fn code(self) -> u8 {
         match self {
             Mode::DecisionCard => 0,
+            Mode::NextSteps => 1,
             Mode::Off => 2,
         }
     }
@@ -155,7 +158,7 @@ pub fn decide(facts: &Facts<'_>, dismissed: impl Fn(&str) -> bool) -> Option<Dec
         return Some(git(w, Kind::Merging, "merging", question, None, 0, None));
     }
     let reply = facts.reply.as_ref()?;
-    if facts.mode != Mode::DecisionCard || facts.busy {
+    if facts.mode == Mode::Off || facts.busy {
         return None;
     }
     let current = facts.workflow.filter(|w| facts.head == Some(w.head.as_str()));
@@ -280,6 +283,7 @@ impl ReplySuggestions {
     }
     pub fn mode(&self) -> Mode {
         match self.mode.load(Ordering::SeqCst) {
+            1 => Mode::NextSteps,
             2 => Mode::Off,
             _ => Mode::DecisionCard,
         }
@@ -358,7 +362,7 @@ impl crate::Host {
         let request_id = format!("reply-choice-{:x}", Sha256::digest(key.as_bytes()));
         let check = || {
             let latest = handle.checkpoint.lock().unwrap().snapshot.transcript.last().map(|m| m.seq as u64);
-            if latest != seq || self.reply_suggestions.mode() != crate::reply_suggestions::Mode::DecisionCard ||
+            if latest != seq || self.reply_suggestions.mode() == crate::reply_suggestions::Mode::Off ||
                 self.reply_suggestions.dismissed(&id)?.contains(&key) {
                 return Err("This decision is no longer current.".into());
             }
@@ -586,7 +590,7 @@ mod tests {
         assert_eq!(Mode::from_settings(Some(&serde_json::json!({"replySuggestions":"decision_card"}))), Mode::DecisionCard);
         assert_eq!(Mode::from_settings(Some(&serde_json::json!({"replySuggestions":"off"}))), Mode::Off);
         assert_eq!(Mode::from_settings(Some(&serde_json::json!({"replySuggestions":"everything"}))), Mode::DecisionCard);
-        assert_eq!(Mode::from_settings(Some(&serde_json::json!({"replySuggestions":"next_steps"}))), Mode::DecisionCard);
+        assert_eq!(Mode::from_settings(Some(&serde_json::json!({"replySuggestions":"next_steps"}))), Mode::NextSteps);
         let state = ReplySuggestions::new(TestDataDir::new().path(), Mode::DEFAULT);
         state.set_mode(Mode::Off);
         assert_eq!(state.mode().as_str(), "off");

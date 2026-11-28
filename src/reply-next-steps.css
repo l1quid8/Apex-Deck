@@ -17,3 +17,4 @@
 @media (pointer: coarse) {
   .reply-next-steps .reply-next-step { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
 }
+.reply-next-separator { color: var(--muted); }

@@ -7,7 +7,7 @@ test('desktop suggestions appear in the composer placeholder', () => {
   const src = fs.readFileSync('src/ChatPane.tsx', 'utf8');
   assert.match(src, /placeholder=\{[^\n]+suggestionHint\(form, text, Boolean\(offer\?\.decision\)\)/);
   assert.match(src, /<QuestionForm view=\{composerForm\}/);
-  assert.doesNotMatch(src, /<ReplyNextSteps/);
+  assert.match(src, /<ReplyNextSteps offer=\{inlineSteps\}/);
 });
 
 const fixture = { name: 'reply-steps-fixture', enforce: 'pre', transform(code, id) {
@@ -21,10 +21,10 @@ const fixture = { name: 'reply-steps-fixture', enforce: 'pre', transform(code, i
     }`;
 }};
 
-test('the inline row shows one suggestion with no caption or toggle', {timeout:150000}, async () => {
+test('the inline row shows multiple suggestions with no caption or toggle', {timeout:150000}, async () => {
   await withAppearanceApp('reply-next-steps-single', String.raw`
     await until('!!document.querySelector(".reply-next-step")');
-    assert.equal(await run('document.querySelectorAll(".reply-next-step").length'),1);
+    assert.equal(await run('document.querySelectorAll(".reply-next-step").length'),2);
     assert.equal(await run('document.querySelector(".reply-next-step").innerText'),'Review changes');
     assert.equal(await run('!!document.querySelector(".reply-next-steps-toggle,.reply-next-steps-label")'),false);
     await run('document.querySelector(".reply-next-step").dispatchEvent(new KeyboardEvent("keydown",{key:"Enter",bubbles:true}))');
