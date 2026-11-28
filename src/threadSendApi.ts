@@ -12,6 +12,7 @@ export interface PendingFile {
   previewUrl: string | null;
 }
 export interface SlicePayload {
+  imageWarning?: string;
   text: string;
   routing: string;
   files: PendingFile[];
@@ -24,6 +25,7 @@ export interface ThreadSendApi {
   queue: string;
   canPickAgent: boolean;
   agents(): { id: string; handle: string; name: string }[];
+  previewImages?(routing: string, override: string[] | null): Promise<{ blocked: boolean; text: string } | null>;
   defaultTargets(): Promise<string[]>;
   submit(p: SlicePayload): QueueRef;
   command(name: "compact" | "curate" | "curate_undo"): QueueRef;

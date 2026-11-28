@@ -131,6 +131,7 @@ import { ParticipantQueues, queuedSticky, type ParticipantMessage, type QueueHol
 import { queueSync } from "./phoneQueue";
 import { handOffChoices, handOffLabel, moreDetailsText, partQuote, quoteFor, quoteTarget, replyText, replyLead, replyWith, type ReplyQuote } from "./reply";
 import { SelectionActions } from "./SelectionActions";
+import { checkingImages, imageInputNotice } from "./imageInput";
 import { attachedImages, attachedVideos, attachmentName, isImage, replyImages, replyVideos, withAttachments, type Attachment } from "./attachments";
 import { mediaKind, priceLabel } from "./media";
 import { mediaSendsFor, missingPicture, priceSend, sourceKey } from "./mediaPrice";
@@ -2679,19 +2680,23 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
 
   const [serverLists, setServerLists] = useState<Record<string, ToolServer[]>>({});
   const [serverErrors, setServerErrors] = useState<Record<string, string>>({});
-  const [serverTargets, setServerTargets] = useState<string[]>([]);
+  const outgoing = replies.length ? replyText(text, replies, participants) : text;
+  const routeRequest = useMemo(() => ({ backend, room: pane.id, outgoing, sticky: stickyFor(outgoing, queued) }),
+    [backend, pane.id, outgoing, queued, participants, optionsSaved, options.policy, lastMessage?.seq]);
+  const [resolvedRoute, setResolvedRoute] = useState<{ request: typeof routeRequest; ids: string[]; error?: string } | null>(null);
+  const serverTargets = resolvedRoute?.ids ?? [];
   useEffect(() => {
     if (!ready || !participants.length) return;
     let live = true;
-    // Ask about the message as it will be sent, with a quote's leading handle.
-    const outgoing = replies.length ? replyText(text, replies, participants) : text;
-    const sticky = stickyFor(outgoing, queued);
-    if (sticky) { setServerTargets(sticky); return; }
-    // A slower answer for older text is ignored once the text has changed.
-    backend.roomTargets(pane.id, outgoing).then(ids => { if (live) setServerTargets(ids); }).catch(() => {});
+    const { backend, room, outgoing, sticky } = routeRequest;
+    if (sticky) { setResolvedRoute({ request: routeRequest, ids: sticky }); return; }
+    backend.roomTargets(room, outgoing).then(ids => {
+      if (live) setResolvedRoute({ request: routeRequest, ids });
+    }).catch(() => {
+      if (live) setResolvedRoute({ request: routeRequest, ids: [], error: "Couldn’t check who will receive this image. Edit the draft to retry." });
+    });
     return () => { live = false; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [backend, pane.id, text, replies, ready, participants, optionsSaved, options.policy, queued]);
+  }, [routeRequest, ready, participants.length]);
   /** Who gets the message as it stands, for the placeholder. */
   const recipient = recipientName({
     targets: serverTargets,
@@ -2723,19 +2728,29 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
   const unknownServers = serverTargets.length && serverTargets.every(id => serverLists[id] !== undefined)
     ? resolveServerRequests(requestedServers, serverTargets.flatMap(id => serverLists[id])).unknown : [];
   // Picture and video bots: each provider's model list, so the composer knows what a message will cost.
-  const [providerModels, setProviderModels] = useState<Record<string, ApiModel[]>>({});
+  const [providerCatalog, setProviderCatalog] = useState<{ host: typeof backend; lists: Record<string, ApiModel[]> } | null>(null);
+  const providerModels = providerCatalog?.host === backend ? providerCatalog.lists : {};
   const providerSources = participants.flatMap(p => p.backend.kind === "open_ai_compatible" ? [p.backend] : []);
   const providerSig = [...new Set(providerSources.map(b => sourceKey(b.base_url, b.api_key_env)))].join("\n");
   useEffect(() => {
     let live = true;
     for (const b of providerSources) {
       const key = sourceKey(b.base_url, b.api_key_env);
-      backend.apiModels(b.base_url, b.api_key_env).then(list => { if (live) setProviderModels(lists => ({ ...lists, [key]: list })); }).catch(() => {});
+      backend.apiModels(b.base_url, b.api_key_env).catch(() => []).then(list => { if (live) setProviderCatalog(prev => ({ host: backend, lists: { ...(prev?.host === backend ? prev.lists : {}), [key]: list } })); }).catch(() => {});
     }
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [backend, providerSig]);
   const picturesAttached = sendable.some(a => isImage(a.path!));
+  const imageNoticeFor = (to: string[], roster: ParticipantConfig[], lists: Record<string, ApiModel[]>) =>
+    imageInputNotice(to, roster, b => {
+      const list = lists[sourceKey(b.base_url, b.api_key_env)];
+      return list ? list.find(m => m.id === b.model) : null;
+    });
+  const draftImageNotice = attached.some(a => isImage(a.path ?? a.name))
+    ? resolvedRoute?.request !== routeRequest ? checkingImages
+      : resolvedRoute.error ? { blocked: true, text: resolvedRoute.error }
+      : imageNoticeFor(serverTargets, participants, providerModels) : null;
   const mediaSends = mediaSendsFor(serverTargets, participants, providerModels, picturesAttached);
   const mediaSig = JSON.stringify(mediaSends);
   const [pricing, setPricing] = useState<{ sig: string; usd: number | null } | null>(null);
@@ -2789,19 +2804,21 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
   const [ownSending, setOwnSending] = useState(false);
   const sendChecks = useRef({ participants, serverLists, providerModels });
   sendChecks.current = { participants, serverLists, providerModels };
-  const checkSend = (to: string[], servers: string[], pictures: boolean): string | null => {
+  const checkSend = (to: string[], servers: string[], pictures: boolean, imageWarning?: string): string | null => {
     const now = sendChecks.current;
+    const images = pictures && imageNoticeFor(to, now.participants, now.providerModels);
+    if (images && (images.blocked || images.text !== imageWarning)) return images.text;
     const unknown = to.length && to.every(id => now.serverLists[id] !== undefined)
       ? resolveServerRequests(servers, to.flatMap(id => now.serverLists[id])).unknown : [];
     if (unknown.length) return `No server, app or plugin called "${unknown[0]}" for ${to.map(id => now.participants.find(p => p.id === id)?.display_name ?? id).join(", ")}`;
     const missing = missingPicture(mediaSendsFor(to, now.participants, now.providerModels, pictures));
     return missing ? `${missing.name} needs a picture: attach one to animate.` : null;
   };
-  finalCheck.current = (to, item) => item.routing === undefined ? null : checkSend(to, item.servers ?? [], (item.parts?.paths ?? []).some(isImage));
-  const submitDraft = (d: { body: string; routing: string; lead: string; servers: string[]; replies: ReplyQuote[] | null; paths: string[]; files: PendingFile[]; tldr: boolean; to: string[] | null }, keep: boolean) => turnQueue.admit({
+  finalCheck.current = (to, item) => item.routing === undefined ? null : checkSend(to, item.servers ?? [], (item.parts?.paths ?? []).some(isImage), item.parts?.imageWarning);
+  const submitDraft = (d: { body: string; routing: string; lead: string; servers: string[]; replies: ReplyQuote[] | null; paths: string[]; files: PendingFile[]; imageWarning?: string; tldr: boolean; to: string[] | null }, keep: boolean) => turnQueue.admit({
     kind: "message", routing: d.routing, servers: d.servers, to: d.to, label: d.body, keep,
     prepare: async to => {
-      const refusal = checkSend(to, d.servers, d.paths.some(isImage) || d.files.some(file => isImage(file.name)));
+      const refusal = checkSend(to, d.servers, d.paths.some(isImage) || d.files.some(file => isImage(file.name)), d.imageWarning);
       if (refusal) throw new Unsent(refusal);
       const hooked = d.body ? await modHost.promptSubmit(pane.id, d.body) : { text: d.body };
       if (hooked.deny) throw new Unsent(hooked.deny);
@@ -2813,7 +2830,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
       const body = postable(hooked.text);
       const named = keptNames(d.body, body, sendChecks.current.participants) + body;
       const typed = (named.trim() || d.lead) ? replyWith(named, d.replies ?? [], d.lead) : "";
-      return { text: composeWire(typed, paths, d.tldr), parts: { typed, paths, tldr: d.tldr } };
+      return { text: composeWire(typed, paths, d.tldr), parts: { typed, paths, tldr: d.tldr, imageWarning: d.imageWarning } };
     },
   });
   const [canPickAgent, setCanPickAgent] = useState(false);
@@ -2835,8 +2852,13 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
       paneId: pane.id, hostId: backend.host?.id ?? "local", queue: turnQueue.instance, canPickAgent,
       agents: () => apiState.current.participants.map(p => ({ id: p.id, handle: mentionFor(p), name: p.display_name })),
       defaultTargets: () => current.current.roomTargets(pane.id, ""),
+      previewImages: async (routing, override) => {
+        const to = override ?? stickyFor(routing, turnQueue.items) ?? await backend.roomTargets(pane.id, routing);
+        const { participants, providerModels } = sendChecks.current;
+        return imageNoticeFor(to, participants, providerModels);
+      },
       submit: p => {
-        const { id, done } = apiState.current.submitDraft({ body: p.text, routing: p.routing, lead: "", servers: parseServerRequests(p.routing).map(s => s.name), replies: null, paths: [], files: p.files, tldr: p.tldr, to: p.to }, true);
+        const { id, done } = apiState.current.submitDraft({ body: p.text, routing: p.routing, lead: "", servers: parseServerRequests(p.routing).map(s => s.name), replies: null, paths: [], files: p.files, imageWarning: p.imageWarning, tldr: p.tldr, to: p.to }, true);
         void done.catch(() => {});
         return { queue: turnQueue.instance, id };
       },
@@ -2852,11 +2874,11 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
     };
     onSendApi(pane.id, api);
     return () => onSendApi(pane.id, null);
-  }, [onSendApi, pane.id, backend, canPickAgent, turnQueue, profileMode, talkOnly]);
+  }, [onSendApi, pane.id, backend, canPickAgent, turnQueue, profileMode, talkOnly, providerCatalog, participants, queued, lastMessage?.seq, options.policy]);
 
   const send = async (steer = false) => {
     if (admittingOwn.current || (dock?.since && Date.now() - dock.since < 600)) return;
-    if (!ready || chatReadOnly || chatBlocked) return;
+    if (!ready || chatReadOnly || chatBlocked || draftImageNotice?.blocked) return;
     if (talkOnly && onChatSend) {
       const body = text.trim();
       if (!body) return;
@@ -2892,7 +2914,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
     setUnread(0);
     setDividerAt(null);
     const lead = replyLead(parsed.text, replies, participants);
-    const { done } = submitDraft({ body: parsed.text, routing: replyWith(parsed.text, replies, lead), lead, servers: parseServerRequests(text).map(s => s.name), replies, paths: sendable.map(a => a.path!), files: [], tldr, to: null }, false);
+    const { done } = submitDraft({ body: parsed.text, routing: replyWith(parsed.text, replies, lead), lead, servers: parseServerRequests(text).map(s => s.name), replies, paths: sendable.map(a => a.path!), files: [], imageWarning: draftImageNotice?.text, tldr, to: null }, false);
     if (tldr) wiggle(field.current);
     setSendingFirst(true);
     admittingOwn.current = true; setOwnSending(true);
@@ -4260,6 +4282,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
             <button className="icon small" aria-label={`Remove ${a.name}`} onClick={() => unattach(a.id)}>×</button>
           </div>)}
         </div>}
+        {draftImageNotice && <p className="muted" role="status">{draftImageNotice.text}</p>}
         {!profileMode && <QuestionForm view={composerForm} nameOf={(id) => agentName(id)} colorOf={color}
           highlighted={highlighted} collapsed={formFolded} notice={formNotice}
           onHighlight={setHighlighted} onExpand={() => setFormFolded(false)}
@@ -4361,7 +4384,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
           {/* One round button: the mic while the box is empty, Send once it has something. Each reply keeps its own Stop, and Esc stops them all. */}
           {roundButton.mic && <VoiceCallControls settings={voiceConfig} candidates={voiceCandidates} who={voiceWho} disabled={!ready || saving} />}
           {roundButton.send && pricePill && <span className="media-price-pill" title="What this message is expected to cost">Send · {pricePill}</span>}
-          {roundButton.send && <button type="button" className="round-send" aria-label="Send" title={ownSending ? "Sending…" : "Send (↵)"} onClick={() => { if (Date.now() - flippedAt.current > 600) void send(); }} disabled={ownSending || chatReadOnly || !!chatBlocked || !ready || (!text.trim() && !sendable.length) || saving || participants.length === 0}><SendArrow /></button>}
+          {roundButton.send && <button type="button" className="round-send" aria-label="Send" title={ownSending ? "Sending…" : "Send (↵)"} onClick={() => { if (Date.now() - flippedAt.current > 600) void send(); }} disabled={ownSending || draftImageNotice?.blocked || chatReadOnly || !!chatBlocked || !ready || (!text.trim() && !sendable.length) || saving || participants.length === 0}><SendArrow /></button>}
           {work && !work.started && <WorkBar work={askPicker ? { ...work, pickerRequest: (work.pickerRequest ?? 0) + askPicker } : work} attachedCount={attached.length} files={recent} tools={workTools}
             toolsWhere={`on ${backend.host?.name ?? LOCAL_HOST_NAME}`} canCopyFolder={!backend.host || backend.host.id === "local"}
             onAttach={attachPath} onTool={useTool}

@@ -996,7 +996,7 @@ export function App() {
     const workspace = workspaces.find(w => w.id === pane.workspaceId);
     const api = sendApis.get(pane.id);
     return [pane.id, {paneId:pane.id,hostId:api?.hostId ?? (pane as Pane & {hostId?:string}).hostId ?? (workspace ? workspaceHost(workspace) : 'missing'),title:pane.title,project:workspace?.name,
-      open:!!api && !pane.closed && !pane.archived && !outside.current.has(pane.id), outside:outside.current.has(pane.id), agents:api?.agents()??[], defaultAgentIds:multiDefaults.get(pane.id)??[]}];
+      previewImages: api?.previewImages, open:!!api && !pane.closed && !pane.archived && !outside.current.has(pane.id), outside:outside.current.has(pane.id), agents:api?.agents()??[], defaultAgentIds:multiDefaults.get(pane.id)??[]}];
   }));
   const multiPlan = planSend({doc:multiDraft.doc,threads:multiThreads,overrides:multiDraft.overrides,files:new Map([...multiFiles].map(([id,file])=>[id,{...file,reading:!file.bytes}]))});
   const routeFor = (id: string) => {
@@ -3351,7 +3351,7 @@ export function App() {
           </div>
           {section !== "agents" && current && !picking && <ComposerDock target={composerTarget ? { paneId: composerTarget.id, title: composerTarget.title, status: statusOf(composerTarget), agents: threadStatus[composerTarget.id]?.who?.length ?? 0, project: workspaces.find(w => w.id === composerTarget.workspaceId)?.name ?? "" } : multiOn ? { paneId: "", title: "Multi-thread message", project: "" } : null} slotRef={setComposerSlot} onBorrowed={setComposerBorrowed} onReveal={id => paneMap.current?.reveal(id)}>
             <MultiBatchBar batches={batches} onReveal={id => paneMap.current?.reveal(id)} />
-            {multiOn && <MultiComposer routeRequest={routeRequest} draft={multiDraft} batches={batches} threads={multiThreads} files={multiFiles} onAttachFiles={attachMultiFiles} onFlash={flashPanes} />}
+            {multiOn && <MultiComposer apiRevision={apiRevision} routeRequest={routeRequest} draft={multiDraft} batches={batches} threads={multiThreads} files={multiFiles} onAttachFiles={attachMultiFiles} onFlash={flashPanes} />}
             {multiAllowed && !multiOn && multiDraft.doc.some(line => line.length) && <p className="multi-kept">Your multi-thread message is kept. <button type="button" onClick={openMulti}>Open it</button></p>}
             {multiAllowed && !multiOn && multiDraft.lastRemoved && <p className="multi-kept">Removed · <button type="button" onClick={multiDraft.undoRemove}>Undo</button></p>}
           </ComposerDock>}

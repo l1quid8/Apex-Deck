@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { attachedImages } from '../src/attachments.ts';
 import { createRequire } from 'node:module';
 
 // Two machines can each have a thread with the same id. These run PhoneApp's own handlers, sliced from
@@ -79,7 +80,7 @@ test('a Work thread\'s queued rows and Edit stay on their own machine when anoth
   const code=transform([slice('  const queueKey =','\n  const [queued'),slice('  function takeBack(','\n  const sessionEdits'),slice('  function unqueue(','\n  /** Ask the thread')].join('\n'),{transforms:['typescript']}).code;
   let queued={},drafts={},quotes={};const notices=[],posts=[];
   const hosts=['A','B'].map(id=>({machine:{id},connection:{get:()=>({status:'online'})},backend:{roomTargets:async()=>['bot'],roomPostTo:async(room,text,to)=>{posts.push({id,room,text,to})},roomStop:async()=>{}}}));
-  const env={machineThreadKey,threadKey,ParticipantQueues,queuedSticky,postFromPhone,splitTldr,quotesBack,giveBack,emptyDraft:()=>({text:'',files:[]}),
+  const env={machineThreadKey,threadKey,ParticipantQueues,queuedSticky,attachedImages,postFromPhone,splitTldr,quotesBack,giveBack,emptyDraft:()=>({text:'',files:[]}),
   queues:{current:new Map()},hostsRef:{current:hosts},roomRef:{current:{id:'shared',hostId:'A',participants:[{id:'bot',display_name:'Bot'}],policy:'everyone'}},busyRef:{current:{}},queuedDrafts:{current:new Map()},rostersRef:{current:new Map()},
   openHostId:'A',setQueued:fn=>queued=fn(queued),setDrafts:fn=>drafts=fn(drafts),setQuotes:fn=>quotes=fn(quotes),setNotice:n=>notices.push(n),words:String,toLink:x=>x};
   const h=new Function('env',`with(env){${code};return {queueFor,unqueue}}`)(env);
@@ -147,7 +148,7 @@ test('a queued Work message picks its bots with its own machine\'s rules, not th
   let queued={},drafts={},quotes={};const targetCalls=[];
   const hosts=['A','B'].map(id=>({machine:{id},connection:{get:()=>({status:'online'})},backend:{roomTargets:async(room,text)=>{targetCalls.push({id,room,text});return text.includes('@One')?['one']:['one','two']},roomPostTo:async()=>{},roomStop:async()=>{}}}));
   const people=[{id:'one',display_name:'One'},{id:'two',display_name:'Two'}];
-  const env={machineThreadKey,ParticipantQueues,queuedSticky,postFromPhone,splitTldr,quotesBack,giveBack,emptyDraft:()=>({text:'',files:[]}),queues:{current:new Map()},hostsRef:{current:hosts},
+  const env={machineThreadKey,ParticipantQueues,queuedSticky,attachedImages,postFromPhone,splitTldr,quotesBack,giveBack,emptyDraft:()=>({text:'',files:[]}),queues:{current:new Map()},hostsRef:{current:hosts},
     roomRef:{current:{id:'shared',hostId:'A',participants:people,policy:'everyone'}},busyRef:{current:{}},queuedDrafts:{current:new Map()},useRef:current=>({current}),
     setQueued:fn=>{queued=fn(queued)},setDrafts:fn=>{drafts=fn(drafts)},setQuotes:fn=>{quotes=fn(quotes)},setNotice:()=>{},words:String,toLink:x=>x};
   env.room=env.roomRef.current;
@@ -178,7 +179,7 @@ test('an offscreen Work queue keeps an untagged follow-up behind its own pending
     // with Two. A post records who it went to, as the machine does, so once @One is sent the next tagless
     // message follows it there.
     const hosts=['A','B'].map(id=>({machine:{id},connection:{get:()=>({status:'online'})},backend:{roomTargets:async(room,text)=>{targetCalls.push({id,room,text});return text.includes('@One')?['one']:remembered.get(id)??['two']},roomPostTo:async(room,text,to)=>{posts.push({id,room,text,to});remembered.set(id,to)},roomStop:async()=>{}}}));
-    const env={machineThreadKey,ParticipantQueues,queuedSticky,postFromPhone,splitTldr,quotesBack,giveBack,emptyDraft:()=>({text:'',files:[]}),queues:{current:new Map()},hostsRef:{current:hosts},
+    const env={machineThreadKey,ParticipantQueues,queuedSticky,attachedImages,postFromPhone,splitTldr,quotesBack,giveBack,emptyDraft:()=>({text:'',files:[]}),queues:{current:new Map()},hostsRef:{current:hosts},
       roomRef:{current:{id:'shared',hostId:'A',participants:people,policy:'mention'}},busyRef:{current:{}},queuedDrafts:{current:new Map()},useRef:current=>({current}),
       setQueued:()=>{},setDrafts:()=>{},setQuotes:()=>{},setNotice:()=>{},words:String,toLink:x=>x};
     env.room=env.roomRef.current;

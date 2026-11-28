@@ -209,6 +209,10 @@ impl<'a> Turn<'a> {
         self
     }
 
+    pub fn has_computer_server(&self) -> bool {
+        self.servers.iter().any(|s| crate::mcp::is_computer_server(&s.name))
+    }
+
     pub fn with_can_read_images(mut self, can_read_images: bool) -> Self {
         self.can_read_images = can_read_images;
         self

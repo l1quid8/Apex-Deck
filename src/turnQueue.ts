@@ -100,6 +100,8 @@ export class TurnQueue {
 }
 
 export interface WireParts {
+  /** Local admission evidence when an image was sent after an unknown-support notice. */
+  imageWarning?: string;
   typed: string;
   paths: string[];
   tldr: boolean;

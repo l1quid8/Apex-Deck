@@ -107,7 +107,7 @@ fn apply_speed(body: &mut Value, base_url: &str, speed: Option<apex_core::Speed>
     }
 }
 
-fn is_direct_openai(base_url: &str) -> bool {
+pub(crate) fn is_direct_openai(base_url: &str) -> bool {
     let Ok(url) = reqwest::Url::parse(base_url.trim()) else { return false };
     url.scheme() == "https" && url.host_str() == Some("api.openai.com")
         && url.port_or_known_default() == Some(443) && url.path().trim_end_matches('/') == "/v1"
@@ -282,8 +282,8 @@ impl Participant for OpenAiCompatParticipant {
     /// A picture or video model costs money with every message, so it
     /// answers only when named.
     fn named_only(&self) -> bool {
-        let Backend::OpenAiCompatible { base_url, model, .. } = &self.config.backend else { return false };
-        crate::api_info::cached_kind(base_url, model).is_some_and(|kind| kind != crate::ModelKind::Text)
+        let Backend::OpenAiCompatible { base_url, model, api_key_env } = &self.config.backend else { return false };
+        crate::api_info::cached_kind(base_url, api_key_env.as_deref(), model).is_some_and(|kind| kind != crate::ModelKind::Text)
     }
 
     async fn respond(
@@ -338,6 +338,11 @@ impl Participant for OpenAiCompatParticipant {
         };
         let url = format!("{}/{}", base_url.trim().trim_end_matches('/'), if is_direct_openai(base_url) { "responses" } else { "chat/completions" });
         let effort = request.effort_override.as_deref().or(self.config.effort.as_deref());
+        let latest_upload = if request.unseen.is_empty() {
+            request.turns.iter().rev().find(|t| t.role == Role::User).map(|t| t.content.as_str())
+        } else {
+            request.unseen.iter().rev().find(|m| m.speaker == apex_core::Speaker::Human).map(|m| m.text.as_str())
+        }.is_some_and(|text| !crate::attachments::paths(text).is_empty());
         let mut base = request_body(model, effort, &request, &self.attachment_roots)?;
         apply_speed(&mut base, base_url, self.config.speed);
         let mut messages: Vec<Value> = base["messages"].as_array().cloned().unwrap_or_default();
@@ -347,9 +352,13 @@ impl Participant for OpenAiCompatParticipant {
         // only the question about what the person will ask next.
         let next_steps = request.turns.last().is_some_and(|t| t.role == Role::User && apex_core::next_steps::is_ask(&t.content));
         let mut turn = match &self.tools {
-            Some(tools) if !next_steps && tools_allowed(self.tools_off_until.lock().unwrap().to_owned(), Instant::now()) && crate::api_info::cached_tools(base_url, model) != Some(false) => {
+            Some(tools) if !next_steps && tools_allowed(self.tools_off_until.lock().unwrap().to_owned(), Instant::now()) && crate::api_info::cached_tools(base_url, api_key_env.as_deref(), model) != Some(false) => {
                 let access = request.access.unwrap_or(self.config.access);
-                Some(api_tools::Turn::new(tools, access, request.plan, self.config.access, approver, on_progress).with_computer(request.computer.as_ref()).with_cwd(request.cwd).with_can_read_images(self.config.can_read_images))
+                let turn = api_tools::Turn::new(tools, access, request.plan, self.config.access, approver, on_progress)
+                    .with_computer(request.computer.as_ref()).with_cwd(request.cwd);
+                let supports_images = turn.has_computer_server() && crate::api_info::model(base_url, api_key_env.as_deref(), model)
+                    .await.is_some_and(|m| m.image_input == Some(true));
+                Some(turn.with_can_read_images(supports_images))
             }
             _ => None,
         };
@@ -463,7 +472,7 @@ impl Participant for OpenAiCompatParticipant {
                 // A text-only server sent a picture, often one another agent
                 // posted: ask once more with a note where each picture was.
                 // Only a reply that names pictures as unsupported lands here.
-                if !images_off && matches!(status.as_u16(), 400 | 404 | 415 | 422 | 501) && refuses_images(&lower) && drop_images(&mut messages) {
+                if !latest_upload && !images_off && matches!(status.as_u16(), 400 | 404 | 415 | 422 | 501) && refuses_images(&lower) && drop_images(&mut messages) {
                     images_off = true;
                     computer_images.clear();
                     continue;
@@ -956,7 +965,7 @@ mod tests {
                     bytes.extend_from_slice(&buffer[..n]);
                 }
                 if models {
-                    let body = r#"{"data":[]}"#;
+                    let body = json!({"data":[{"id":"fixture-vision","model_spec":{"capabilities":{"supportsVision":can_read_images}}}]}).to_string();
                     socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
                     continue;
                 }
@@ -993,7 +1002,7 @@ done
 "#;
         let config: ParticipantConfig = serde_json::from_value(json!({"id":"vision", "display_name":"Vision", "backend":{
             "kind":"open_ai_compatible", "base_url":format!("http://{address}/v1"),"model":"fixture-vision"
-        }, "can_read_images":can_read_images})).unwrap();
+        }, "can_read_images":!can_read_images})).unwrap();
         let tools = ToolBox {
             mcp: api_tools::mcp_client::fixture_pool(vec![api_tools::mcp_client::ServerSpec { name:server.into(), transport:api_tools::mcp_client::Transport::Stdio{
                 command:"sh".into(), args:vec!["-c".into(),script.into()],env:vec![]
@@ -1487,6 +1496,14 @@ done
         let bot = OpenAiCompatParticipant::new(config).with_attachment_roots(vec![path.parent().unwrap().canonicalize().unwrap()]);
         let content = if with_image { format!("What is in this picture?\nAttached image: {}", path.display()) } else { "What is in this picture?".into() };
         let request = TurnRequest { system: "test".into(), turns: vec![apex_core::ViewTurn { role: Role::User, content }], ..Default::default() };
+        let mut request = request;
+        if matches!(tag, "once" | "retry-fails") {
+            let original = request.turns[0].content.clone();
+            request.unseen = [original, "Continue".into()].into_iter().enumerate().map(|(seq,text)| apex_core::Message {
+                seq, text, speaker: apex_core::Speaker::Human, servers: vec![], at: None,
+                late_reply_from: None, origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None,
+            }).collect();
+        }
         let result = bot.respond_with_progress(request, &|_| {}).await;
         http.abort();
         let _ = std::fs::remove_file(path);
@@ -1503,20 +1520,11 @@ done
     }
 
     #[tokio::test]
-    async fn a_server_that_refuses_pictures_is_asked_again_without_them() {
-        let (bodies, result) = scripted_turn("retry", true, vec![(400, DS4_NO_VISION.into()), answer("I can't see the picture.")]).await;
-        assert_eq!(result.unwrap().text, "I can't see the picture.");
-        assert_eq!(bodies.len(), 2, "one refused request, one retry");
+    async fn explicit_upload_refusal_is_reported_without_a_text_only_retry() {
+        let (bodies, result) = scripted_turn("upload", true, vec![(400, DS4_NO_VISION.into())]).await;
+        assert!(result.unwrap_err().to_string().contains("--vision"));
+        assert_eq!(bodies.len(), 1);
         assert_eq!(image_parts(&bodies[0]), 1);
-        assert_eq!(image_parts(&bodies[1]), 0, "the retry carries no picture");
-        let parts = bodies[1]["messages"][1]["content"].as_array().unwrap();
-        assert!(parts[0]["text"].as_str().unwrap().starts_with("What is in this picture?"), "the person's words stay");
-        assert_eq!(parts[1], json!({"type":"text", "text":IMAGE_NOT_SENT}));
-        // Nothing else about the request changes.
-        for field in ["model", "stream", "stream_options"] {
-            assert_eq!(bodies[0][field], bodies[1][field], "{field}");
-        }
-        assert_eq!(bodies[0]["messages"][0], bodies[1]["messages"][0]);
     }
 
     #[tokio::test]

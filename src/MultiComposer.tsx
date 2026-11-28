@@ -1,3 +1,5 @@
+import { isImage } from './attachments';
+import { checkingImages } from './imageInput';
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { RichDraftEditor } from './RichDraftEditor';
@@ -5,12 +7,12 @@ import { planSend, summaryLine, type Problem, type ThreadInfo } from './slicePla
 import { threadIds, type Caret, type DraftDoc, type Token } from './sliceDraft';
 import { freezeBatch } from './multiSend';
 import { ComposerModeControls, ThreadComposerBox } from './ThreadComposer';
-import type { PendingFile } from './threadSendApi';
+import type { PendingFile, ThreadSendApi } from './threadSendApi';
 import type { useMultiDraft } from './useMultiDraft';
 import type { useMultiBatches } from './useMultiBatches';
 import './MultiComposer.css';
 
-export type ComposerThread = ThreadInfo & { project?: string; outside?: boolean };
+export type ComposerThread = ThreadInfo & { project?: string; outside?: boolean; previewImages?: ThreadSendApi["previewImages"] };
 export function replaceDraftRange(doc: DraftDoc, at: Caret, count: number, tokens: Token[]): DraftDoc {
   const next = doc.map(line => [...line]); const line = next[at.line] ?? [];
   const units = line.flatMap<Token>(token => token.kind === 'text' ? token.text.split('').map(text => ({kind:'text' as const,text})) : [token]);
@@ -40,7 +42,8 @@ function PicturesIcon() {
   return <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2" /><path d="m3 16 5-5 4 4 3-3 6 6" /></svg>;
 }
 
-export function MultiComposer({ draft, batches, threads, files, onAttachFiles, onFlash, routeRequest }: {
+export function MultiComposer({ apiRevision = 0, draft, batches, threads, files, onAttachFiles, onFlash, routeRequest }: {
+  apiRevision?: number;
   routeRequest?: {paneId:string;anchor:DOMRect;seq:number};
   draft: ReturnType<typeof useMultiDraft>;
   batches: ReturnType<typeof useMultiBatches>; threads: Map<string, ComposerThread>;
@@ -77,9 +80,28 @@ export function MultiComposer({ draft, batches, threads, files, onAttachFiles, o
   const blocking = plan.problems.filter(p => p.kind !== 'empty');
   const selected = threadIds(draft.doc);
   const fileName = (id:string) => files.get(id) ?? null;
+  const imageSlices = plan.slices.filter(slice => slice.files.some(id => isImage(files.get(id)?.name ?? "")));
+  const imageKey = JSON.stringify([apiRevision, imageSlices.map(s => [s.paneId, s.hostId, s.routing, s.to])]);
+  type Notice = { blocked: boolean; text: string };
+  const [preview, setPreview] = useState<{ key: string; notices: Map<string, Notice | null> } | null>(null);
+  useEffect(() => {
+    if (!imageSlices.length) return;
+    let live = true;
+    void Promise.all(imageSlices.map(async slice => {
+      const check = threads.get(slice.paneId)?.previewImages;
+      const notice = check ? await check(slice.routing, slice.to).catch(() => ({ blocked: true, text: "Couldn’t check this thread’s image recipients." })) : null;
+      return [slice.paneId, notice] as const;
+    })).then(rows => { if (live) setPreview({ key: imageKey, notices: new Map(rows) }); });
+    return () => { live = false; };
+  }, [imageKey]);
+  const notices = imageSlices.flatMap(s => {
+    const notice = preview?.key === imageKey ? preview.notices.get(s.paneId) : checkingImages;
+    return notice ? [{ ...notice, paneId: s.paneId }] : [];
+  });
+  const blockedImage = notices.find(n => n.blocked);
   const send = () => {
     const now = draft.current();
-    if (!now.on || batches.failed.length) return;
+    if (!now.on || batches.failed.length || blockedImage) return;
     const checked = planSend({doc:now.doc,threads,files:metadata,overrides:now.overrides});
     if (!checked.slices.length || checked.problems.some(p => p.kind !== 'empty')) return;
     const empty = checked.problems.flatMap(p => p.kind === 'empty' ? [p.paneId] : []);
@@ -88,7 +110,11 @@ export function MultiComposer({ draft, batches, threads, files, onAttachFiles, o
       timer.current=setTimeout(()=>setFlash([]),1200); return;
     }
     const batch = freezeBatch(checked.slices, files, now.tldr);
-    for (const slice of batch) slice.title = threads.get(slice.paneId)?.title ?? slice.paneId;
+    for (const slice of batch) {
+      slice.title = threads.get(slice.paneId)?.title ?? slice.paneId;
+      const warning = notices.find(n => n.paneId === slice.paneId);
+      if (warning && slice.payload) slice.payload.imageWarning = warning.text;
+    }
     draft.take(); batches.start(batch);
   };
   const pick = (tokens: Token[]) => {
@@ -103,7 +129,7 @@ export function MultiComposer({ draft, batches, threads, files, onAttachFiles, o
   const lineThreads = lines.flatMap(t=>t.kind==='thread'?[threads.get(t.paneId)]:[]).filter(t=>t!==undefined);
   const agents = [...new Map(lineThreads.flatMap(t=>t.agents).map(a=>[a.id,a])).values()];
   const entries = trigger?.kind==='#' ? [...threads.values()].filter(t=>selected.includes(t.paneId) || !!trigger.query && `${t.title} ${t.project??''}`.toLowerCase().includes(trigger.query.toLowerCase())) : [];
-  const disabledReason = batches.failed.length ? 'Retry or discard the failed batch first.' : blocking[0]?.kind === 'file-reading' ? `Reading ${files.get(blocking[0].fileId)?.name ?? 'file'}…` : blocking.length ? 'Resolve the problems above before sending.' : undefined;
+  const disabledReason = blockedImage ? blockedImage.text : batches.failed.length ? 'Retry or discard the failed batch first.' : blocking[0]?.kind === 'file-reading' ? `Reading ${files.get(blocking[0].fileId)?.name ?? 'file'}…` : blocking.length ? 'Resolve the problems above before sending.' : undefined;
   // Only the thread chips sit with the box: no thread rows. A blocked draft names its
   // first problem in the To line; the chips and pane headers show where.
   const problemText = (p: Problem) => `${p.kind.replaceAll('-',' ')}${'paneId' in p?`: ${threads.get(p.paneId)?.title??'Closed thread'}`:'line' in p?` on line ${p.line+1}`:''}`;
@@ -124,6 +150,7 @@ export function MultiComposer({ draft, batches, threads, files, onAttachFiles, o
     if(event.key==='Enter' && (event.target as Element).closest('.rich-draft-editor') && !event.shiftKey && !event.nativeEvent.isComposing && !trigger){ event.preventDefault(); if(!event.repeat)send(); }
   }}>
     <div className={`multi-summary${problem?' warn':''}`}><SummaryText line={summary} /></div>
+    {notices.map(n => <div key={n.paneId} className="muted" role="status">{threads.get(n.paneId)?.title} · {n.text}</div>)}
     {routeThread && routeAnchor && createPortal(<div ref={routeMenu} role="menu" className="multi-route-menu" style={{left:Math.max(8,Math.min(routeAnchor.left,window.innerWidth-260)),top:routeAnchor.bottom}}>
       {routeThread.agents.map(agent=><button type="button" role="menuitem" key={agent.id} onClick={()=>pickAgent(routeThread.paneId,agent)}>{agent.name}</button>)}
     </div>, document.body)}
