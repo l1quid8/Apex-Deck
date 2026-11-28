@@ -45,6 +45,7 @@ private final class WidgetRun {
     var scrollObservation: NSKeyValueObservation?
     var viewport: CGRect = .zero
     var measuredOffset: CGFloat = 0
+    var previewPending = false, previewDirty = false, hasPreview = false
     var content: WKWebView?
     var childFrame: WKFrameInfo?
     var savedJSON: String?
@@ -362,6 +363,7 @@ final class ApexGeneratedCardsPlugin: CAPPlugin, CAPBridgedPlugin, WKScriptMessa
             guard let id = call.getString("runId"), let run = self.runs[id], let owner = self.webView,
                   let bounds = self.rect(call.options["bounds"]), let clip = self.rect(call.options["clip"])
             else { return call.reject("Invalid generated card layout.") }
+            if run.bounds.size != bounds.size { self.schedulePreview(run) }
             run.bounds = bounds
             run.clip = clip
             self.bindScroll(run, call: call, owner: owner)
@@ -417,6 +419,29 @@ final class ApexGeneratedCardsPlugin: CAPPlugin, CAPBridgedPlugin, WKScriptMessa
         for done in waiters { done() }
     }
 
+    // A bounded raster stays in the DOM slot while native clipping catches up or
+    // the live view remounts. Capture after startup and edits, never per scroll.
+    private func schedulePreview(_ run: WidgetRun) {
+        run.previewDirty = true
+        guard run.ready, !run.previewPending else { return }
+        run.previewPending = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self, weak run] in
+            guard let self, let run, self.runs[run.id] === run, let view = run.content else { return }
+            run.previewDirty = false
+            let config = WKSnapshotConfiguration()
+            config.snapshotWidth = NSNumber(value: Double(min(480, max(1, view.bounds.width))))
+            view.takeSnapshot(with: config) { [weak self, weak run] image, _ in
+                guard let self, let run, self.runs[run.id] === run else { return }
+                run.previewPending = false
+                if run.previewDirty { return self.schedulePreview(run) }
+                guard let image, let data = image.jpegData(compressionQuality: 0.8), data.count <= 256 * 1024 else { return }
+                run.hasPreview = true
+                self.notifyListeners("cardEvent", data: ["runId": run.id, "type": "preview",
+                    "image": "data:image/jpeg;base64," + data.base64EncodedString()])
+            }
+        }
+    }
+
     private func fault(_ run: WidgetRun) {
         log.error("Widget stopped: top=\(run.acceptedTop), child=\(run.acceptedChild), initialized=\(run.initialized), ready=\(run.ready)")
         remove(run, capture: false)
@@ -453,6 +478,7 @@ final class ApexGeneratedCardsPlugin: CAPPlugin, CAPBridgedPlugin, WKScriptMessa
             guard run.childFrame != nil else { return fault(run) }
             run.ready = true
             scheduleHeartbeat(run)
+            schedulePreview(run)
             run.clipView.isHidden = run.clipView.frame.isEmpty
             notifyListeners("cardEvent", data: ["runId": run.id, "type": type])
         case "widget-state" where run.initialized:
@@ -460,6 +486,11 @@ final class ApexGeneratedCardsPlugin: CAPPlugin, CAPBridgedPlugin, WKScriptMessa
             do {
                 try store.save(json, for: run.key)
                 run.savedJSON = json
+                if run.hasPreview {
+                    run.hasPreview = false
+                    notifyListeners("cardEvent", data: ["runId": run.id, "type": "preview", "image": ""])
+                }
+                schedulePreview(run)
             } catch { fault(run) }
         case "resize" where run.ready:
             guard let height = body["height"] as? Int, (200...800).contains(height) else { return }

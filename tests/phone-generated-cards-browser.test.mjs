@@ -56,6 +56,8 @@ async function scenario() {
     assert.equal(await read("mounts.length"), 1, "ordinary rerenders preserve the run");
     await read("emitCard({runId:mounts[0].runId,type:'discuss',text:'Before scroll'})");
     await until("document.querySelector('pre')?.textContent === 'Before scroll'");
+    await read("emitCard({runId:mounts[0].runId,type:'preview',image:'data:image/jpeg;base64,AAAA'})");
+    await until("Boolean(document.querySelector('.generated-snapshot'))");
     await read("document.querySelector('main').scrollTop=40");
     await until("layouts.some(layout => layout.scrollTop === 40)");
     const [mount, layout] = await read("[mounts[0], layouts.find(layout => layout.scrollTop === 40)]");
@@ -68,6 +70,10 @@ async function scenario() {
     await read("document.querySelector('main').scrollTop=0");
     await until("mounts.length === 2");
     assert.equal(await read("document.querySelector('.generated-discuss')"), null);
+    await read("emitCard({runId:mounts[0].runId,type:'preview',image:''})");
+    assert.ok(await read("Boolean(document.querySelector('.generated-snapshot'))"), "a disposed run cannot erase the preview");
+    await read("emitCard({runId:mounts[1].runId,type:'preview',image:''})");
+    await until("!document.querySelector('.generated-snapshot')");
     assert.notEqual(await read("mounts[0].runId"), await read("mounts[1].runId"));
     await read("emitCard({runId:mounts[0].runId,type:'discuss',text:'Old'});emitCard({runId:mounts[1].runId,type:'discuss',text:'Current'})");
     await until("document.querySelector('pre')?.textContent === 'Current'");

@@ -13,6 +13,7 @@ interface Props {
 export function PhoneGeneratedCard({ card, hostId, threadId, messageId, onDiscuss }: Props) {
   const slot = useRef<HTMLDivElement>(null);
   const [height, setHeight] = useState(300);
+  const [preview, setPreview] = useState("");
   const [discussion, setDiscussion] = useState("");
   const [failure, setFailure] = useState<"fault" | "unsupported" | null>(null);
 
@@ -38,7 +39,7 @@ export function PhoneGeneratedCard({ card, hostId, threadId, messageId, onDiscus
       runId = id;
       void request.catch(error => {
         if (!alive || runId !== id) return;
-        if (error?.code === "SUSPENDED") { suspended = true; dispose(); return; }
+        if (error?.code === "SUSPENDED") { suspended = true; setPreview(""); dispose(); return; }
         fail();
       });
     };
@@ -56,6 +57,7 @@ export function PhoneGeneratedCard({ card, hostId, threadId, messageId, onDiscus
       setFailure("fault");
     };
     setDiscussion("");
+    setPreview("");
     if (api && hostId && !failure) void (async () => {
       if (!(await api.capability()).enabled) { if (alive) setFailure("unsupported"); return; }
       if (!alive) return;
@@ -63,7 +65,9 @@ export function PhoneGeneratedCard({ card, hostId, threadId, messageId, onDiscus
         if (!alive) return;
         if (event.type === "resumed" && suspended) { suspended = false; place(); return; }
         if (!runId || event.runId !== runId) return;
-        if (event.type === "suspended") { suspended = true; dispose(); return; }
+        if (event.type === "suspended") { suspended = true; setPreview(""); dispose(); return; }
+        if (event.type === "preview" && typeof event.image === "string" && event.image.length <= 350000
+            && (!event.image || event.image.startsWith("data:image/jpeg;base64,"))) setPreview(event.image);
         if (event.type === "scroll" && Number.isFinite(event.deltaY)) {
           slot.current?.closest(".ph-chat")?.scrollBy(0, Math.max(-innerHeight, Math.min(innerHeight, event.deltaY!)));
         }
@@ -99,7 +103,9 @@ export function PhoneGeneratedCard({ card, hostId, threadId, messageId, onDiscus
     {failure ? <>
       <p className="generated-fallback">{card.fallback}</p>
       {hostId && failure === "fault" && <button type="button" onClick={() => setFailure(null)}>Retry interface</button>}
-    </> : <div className="generated-slot" style={{ height }} ref={slot} aria-label={card.title} />}
+    </> : <div className="generated-slot" style={{ height }} ref={slot} aria-label={card.title}>
+      {hostId && preview && <img className="generated-snapshot" src={preview} alt="" draggable={false} />}
+    </div>}
     {hostId && discussion && <div className="generated-discuss"><pre>{discussion}</pre>
       <button type="button" onClick={() => { onDiscuss(discussion); setDiscussion(""); }}>Discuss this text</button>
     </div>}

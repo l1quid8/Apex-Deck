@@ -3,7 +3,7 @@ import type { GeneratedCard } from "../../shared/generatedCard.mjs";
 
 type Rect = { x: number; y: number; width: number; height: number };
 export type CardGeometry = { bounds: Rect; clip: Rect; viewport: Rect; scrollTop: number };
-type CardEvent = { runId: string; type: "ready" | "resize" | "discuss" | "fault" | "suspended" | "resumed" | "scroll"; deltaY?: number; height?: number; text?: string };
+type CardEvent = { runId: string; type: "ready" | "resize" | "discuss" | "fault" | "suspended" | "resumed" | "scroll" | "preview"; image?: string; deltaY?: number; height?: number; text?: string };
 interface NativeCards {
   capability(): Promise<{ enabled: boolean }>;
   mount(request: CardGeometry & { runId: string; hostId: string; threadId: string; messageId: string; card: GeneratedCard }): Promise<void>;
