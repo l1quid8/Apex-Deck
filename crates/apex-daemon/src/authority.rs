@@ -622,7 +622,7 @@ pub(crate) mod tests {
             ("personal_admin_execute", true, json!({"assistantId":"a","tool":"app.agent.list","args":{}})),
             ("personal_admin_undo", true, json!({"assistantId":"a","receiptId":"ar-1"})),
             ("personal_ship_offers", true, json!({ "assistantId": "asst-1" })),
-            ("personal_ship", true, json!({ "assistantId": "asst-1", "pr": 84, "head": "abc" })),
+            ("personal_ship", true, json!({ "assistantId": "asst-1", "pr": 84, "repo": "test/repo", "head": "abc" })),
             ("room_reply_decision_dismiss", true, json!({ "id": "mine", "key": "test/repo|mine|7|merge|abc" })),
             ("room_thread_git_action", true, json!({ "id": "mine", "action": { "kind": "request_merge", "expected": { "root": "/repo", "head": "abc", "tree": "tree", "ahead": 1, "behind": 0, "files": [], "checksPassed": false, "clean": true } } })),
             ("room_git_action", true, json!({ "id": "mine", "action": { "kind": "checks", "expected": { "root": "/repo", "head": "abc", "tree": "tree", "branch": "feat/test", "target": "main", "targetHead": "base", "ahead": 1, "behind": 0, "files": [], "checksPassed": false, "clean": true } } })),

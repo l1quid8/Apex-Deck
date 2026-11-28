@@ -73,8 +73,8 @@ export function ShipOfferCard({ offer, lane, refresh }: { offer: ShipOffer; lane
       if (!lane.cancelShip || !offer.room || !offer.checkout || !card.head) throw new Error("This merge can no longer be cancelled from here.");
       return (await lane.cancelShip(offer.room, { ...offer.checkout, head: card.head })).message;
     }
-    if (!lane.ship || !card.head) throw new Error("Update this machine’s service to ship from here.");
-    return (await lane.ship(offer.pr, card.head)).message;
+    if (!lane.ship || !card.head || !offer.checkout) throw new Error("Update this machine’s service to ship from here.");
+    return (await lane.ship(offer.pr, card.head, offer.checkout.repo)).message;
   });
   const label = cancel ? (card.cancellable ? "Cancel" : undefined) : card.primary;
   return <section className="reply-decision ship-offer" aria-label={`Pull request ${offer.pr}`} aria-busy={busy}>

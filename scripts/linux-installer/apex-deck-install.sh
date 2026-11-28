@@ -48,6 +48,8 @@ usage() {
   cat <<EOF
 Usage:
   sudo $0 install --user NAME [--data-dir DIR]
+  sudo $0 update [EXTRACTED_BUNDLE]
+  sudo $0 rollback
   sudo $0 status
   sudo $0 repair
   sudo $0 uninstall [--purge]
@@ -160,7 +162,7 @@ install_launcher() { # tree
   # the broker launches the supervised window. It grants nothing by itself.
   printf '#!/bin/sh\nexec %q "$@"\n' "$tree/apex-deck" >"$LAUNCHER.new"
   chmod 0755 "$LAUNCHER.new"; mv -f "$LAUNCHER.new" "$LAUNCHER"
-  install -m 0755 "$assets/apex-deck-install" "$INSTALLER"
+
   install -m 0644 "$assets/$APP_ID.desktop" "$DESKTOP"
   for icon in "$assets"/icons/*.png; do
     size=$(basename "$icon" .png)
@@ -256,10 +258,74 @@ cmd_install() {
   say "Staged $tree"
   install_apparmor "$user"
   enroll "$tree" "$user" "$data"
-  activate "$tree" "$work"
   printf 'USER=%q\nDATA_DIR=%q\n' "$user" "$data" >"$STATE/install.env"
+  pin_manager "$tree"
+  activate "$tree" "$work"
   install_launcher "$tree"
   say "$PRODUCT is installed for $user. Open it from Applications, or run $LAUNCHER as $user."
+}
+
+# A rollback switches desktop assets but keeps the capable admin tool. Rename
+# the link atomically so a command can safely replace its own installed entry.
+pin_manager() {
+  install -d -m 0755 /usr/local/sbin
+  ln -sfnT -- "$1/resources/linux/apex-deck-install" "$INSTALLER.new"
+  mv -Tf -- "$INSTALLER.new" "$INSTALLER"
+  sync -f /usr/local/sbin
+}
+
+manager_tree() {
+  local script
+  script=$(realpath -e "$INSTALLER")
+  if [[ $script == "$TREES"/staging-*/resources/linux/apex-deck-install ]]; then
+    printf '%s\n' "${script%/resources/linux/apex-deck-install}"
+  else
+    # One-time migration uses the script inside the installed broker's
+    # already verified staged tree (see docs/linux-nightly.md).
+    script=$(realpath -e "${BASH_SOURCE[0]}")
+    [[ $script == "$TREES"/staging-*/resources/linux/apex-deck-install ]] ||
+      die "use the verified migration procedure in docs/linux-nightly.md"
+    printf '%s\n' "${script%/resources/linux/apex-deck-install}"
+  fi
+}
+
+cmd_update() {
+  (( $# <= 1 )) || usage
+  require_host
+  [[ $CHANNEL == nightly ]] || die "updates require the Nightly channel."
+  local manager tree
+  manager=$(manager_tree)
+  WORK=$(work_dir)
+  trap 'rm -rf -- "$WORK"' EXIT
+  if (( $# )); then
+    copy_release "$1" "$WORK"
+  else
+    python3 -I "$manager/resources/linux/fetch-nightly.py" "$WORK" "$ARCH"
+  fi
+  tree=$(stage "$manager" "$WORK")
+  [[ -f $tree/resources/linux/fetch-nightly.py ]] || die "candidate predates the protected updater."
+  # Pin the authenticated migration manager before the first service switch.
+  if [[ ! -L $INSTALLER ]]; then pin_manager "$manager"; fi
+  broker "$manager" activate-linux-release "$tree" "$WORK/manifest.json" "$WORK/manifest.sig" "$WORK/payload.tar"
+  pin_manager "$tree"
+  install_launcher "$tree"
+  say "Updated $PRODUCT to $tree."
+}
+
+cmd_restore() {
+  require_host
+  local manager tree
+  manager=$(manager_tree)
+  broker "$manager" "$1"
+  tree=$(active_tree) || die "cannot locate the restored release"
+  # Complete an interrupted launcher/manager installation after healthy().
+  local highest
+  highest=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["highest"]["descriptor"]["manifestSha256"])' "$AUTHORITY/release-history.json")
+  if [[ $tree == *-"${highest:0:16}" && -f $tree/resources/linux/fetch-nightly.py ]]; then
+    pin_manager "$tree"
+  fi
+  install_launcher "$tree"
+  say "Restored $PRODUCT at $tree."
 }
 
 cmd_status() {
@@ -281,6 +347,11 @@ installed_user() {
 
 cmd_repair() {
   require_host
+  if [[ $CHANNEL == nightly && -L $INSTALLER ]]; then
+    install_apparmor "$(installed_user)"
+    cmd_restore repair-selected-linux-release
+    return
+  fi
   local tree sha meta
   tree=$(active_tree) || die "no installed release to repair."
   # The broker kept the verified inputs of every activated release.
@@ -334,7 +405,15 @@ cmd_uninstall() {
   fi
 }
 
+# Include launcher/manager replacement in the transaction and serialize it
+# with repair and uninstall. /run is root-owned across supported platforms.
+if [[ $EUID -eq 0 && ${1:-} != status ]]; then
+  exec 9>"/run/$SLUG-installer.lock"
+  flock -n 9 || die "another installer command is running"
+fi
 case ${1:-} in
+  update) shift; cmd_update "$@" ;;
+  rollback) [[ $# == 1 ]] || usage; cmd_restore rollback-linux-release ;;
   install) shift; cmd_install "$@" ;;
   status) cmd_status ;;
   repair) cmd_repair ;;

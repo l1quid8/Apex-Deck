@@ -515,15 +515,22 @@ async fn live_rooms_survive_a_full_assistant_history() {
 #[tokio::test]
 async fn discovery_at_the_smallest_budget_does_not_double_the_prompt() {
     let fixture = Fixture::new();
-    fixture.project_chat(crate::personal_workspace::ProjectTools::Full);
+    let project = fixture.project_chat(crate::personal_workspace::ProjectTools::Full);
     fixture.host.change_assistant(&fixture.id, |a| { a.context_budget_chars = 4_000; Ok(()) }).unwrap();
     let fake = Fake::new(true);
     fixture.host.personal_send(&fixture.id, "small-context", "Which project chats can you read?").unwrap();
     fixture.drain(&fake.tools()).await;
     let prompt = &fake.prompts.lock().unwrap()[0];
     assert!(prompt.contains("Checkout fix"));
-    // The fixture's folder appears in the prompt, and its length follows TMPDIR.
-    let measured = prompt.replace(&*fixture.root.to_string_lossy(), "").chars().count();
+    // The fixture's canonical folder appears raw and JSON-escaped in the prompt,
+    // and on Windows canonicalize() adds `\\?\` and expands short TMPDIR segments.
+    let json_cwd = serde_json::to_string(&project.cwd).unwrap();
+    let measured = prompt
+        .replace(json_cwd.trim_matches('"'), "")
+        .replace(&project.cwd, "")
+        .replace(&*fixture.root.to_string_lossy(), "")
+        .chars()
+        .count();
     assert!(measured <= 4_900, "fixed instructions and bounded live context: {measured}");
 }
 

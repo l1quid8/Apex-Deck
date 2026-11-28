@@ -63,6 +63,8 @@ struct Ledger {
 pub struct TaskBranches {
     path: PathBuf,
     cache: Mutex<Option<Ledger>>,
+    #[cfg(test)]
+    fail_save: std::sync::atomic::AtomicBool,
 }
 
 /// `feat|fix|chore|docs|ci|refactor|test|perf`, a slash, then 1 to 48
@@ -170,7 +172,25 @@ fn reset_copy(data: &Path, copy: &BotCopy) -> Result<(), String> {
 
 impl TaskBranches {
     pub fn new(data: &Path) -> Self {
-        Self { path: data.join("task-branches-v1.json"), cache: Mutex::new(None) }
+        Self {
+            path: data.join("task-branches-v1.json"),
+            cache: Mutex::new(None),
+            #[cfg(test)]
+            fail_save: Default::default(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_save(&self) {
+        self.fail_save.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn save(&self, ledger: &Ledger) -> Result<(), String> {
+        #[cfg(test)]
+        if self.fail_save.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            return Err("Injected task ledger save failure.".into());
+        }
+        crate::plain_file::save(&self.path, ledger)
     }
 
     fn edit<T>(&self, f: impl FnOnce(&mut Vec<TaskFolder>) -> Result<T, String>) -> Result<T, String> {
@@ -186,7 +206,7 @@ impl TaskBranches {
         let mut next = current.clone();
         let result = f(&mut next.folders)?;
         if current.folders != next.folders {
-            if let Err(e) = crate::plain_file::save(&self.path, &next) {
+            if let Err(e) = self.save(&next) {
                 *cache = None;
                 return Err(e);
             }
@@ -217,6 +237,15 @@ impl TaskBranches {
             }
             folders.remove(at);
             Ok(None)
+        })
+    }
+
+    /// Release only the task folder that the caller inspected. Its checkout
+    /// and branch remain available on disk.
+    pub(crate) fn abandon(&self, expected: &TaskFolder) -> Result<(), String> {
+        self.edit(|folders| {
+            folders.retain(|folder| folder != expected);
+            Ok(())
         })
     }
 

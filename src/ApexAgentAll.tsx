@@ -1,7 +1,7 @@
-import { ShipOfferCard, useShipOffers } from './ShipOfferCard';
 import { AssistantWorkingTurn } from './phone/AssistantWorkingTurn';
 import { ArrowUp } from './phone/icons';
 import './phone/voice-call.css';
+import { ShipOfferCard, useShipOffers } from './ShipOfferCard';
 import { useComposerHistory } from "./useComposerHistory";
 import { LOCAL_HOST_REFERENCE } from "./hostFacts.ts";
 import { assistantHistoryTexts } from "./composerHistory";

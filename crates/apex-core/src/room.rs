@@ -1453,11 +1453,11 @@ impl Room {
     /// What to send `id` for suggested next prompts after its latest reply:
     /// its own view of the chat, then the next-steps question, read-only.
     pub fn next_steps_request(&self, id: &ParticipantId) -> Option<(Arc<dyn Participant>, TurnRequest)> {
-        self.next_steps_request_with_answers(id, self.answers.load(Ordering::SeqCst))
+        self.next_steps_request_with_answers(id, self.answers.load(Ordering::SeqCst), crate::next_steps::ASK)
     }
 
     /// As `next_steps_request`, keeping the answers preference of the chain that just replied.
-    pub fn next_steps_request_with_answers(&self, id: &ParticipantId, answers: bool) -> Option<(Arc<dyn Participant>, TurnRequest)> {
+    pub fn next_steps_request_with_answers(&self, id: &ParticipantId, answers: bool, prompt: &str) -> Option<(Arc<dyn Participant>, TurnRequest)> {
         let (participant, mut request) = self.request_for_capability(id, answers, GeneratedUiCapability::Unsupported)?;
         request.room_reply = false;
         // Suggesting is not planning, even while the thread plans.
@@ -1465,7 +1465,7 @@ impl Room {
             request.plan = false;
             request.system.truncate(request.system.len() - PLAN_SYSTEM.len());
         }
-        request.turns.push(ViewTurn { role: Role::User, content: crate::next_steps::ASK.to_string() });
+        request.turns.push(ViewTurn { role: Role::User, content: prompt.to_string() });
         request.access = Some(crate::Access::Read);
         request.unseen = Vec::new();
         Some((participant, request))
@@ -1740,7 +1740,7 @@ mod approver_tests {
         let (_, steps) = room.next_steps_request(&id).unwrap();
         assert!(!steps.room_reply);
         assert!(steps.system.ends_with(ANSWERS_SYSTEM), "next steps drop only Plan mode's text");
-        let (_, off) = room.next_steps_request_with_answers(&id, false).unwrap();
+        let (_, off) = room.next_steps_request_with_answers(&id, false, crate::next_steps::ASK).unwrap();
         assert!(!off.system.contains("apex-ui"), "next steps keep a chain's answers-off preference");
     }
     use super::*;

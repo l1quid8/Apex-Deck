@@ -79,6 +79,7 @@ export function buildBundle({ unpacked, provenance, appimageJson, out, privateKe
     copyFileSync(provenance, path.join(payload, 'resources/bin/apex-provenance'));
     chmodSync(path.join(payload, 'resources/bin/apex-provenance'), 0o755);
     const installer = renderInstaller(readFileSync(path.join(repo, 'scripts/linux-installer/apex-deck-install.sh'), 'utf8'), { channel, arch });
+    copyFileSync(path.join(repo, 'scripts/linux-installer/fetch-nightly.py'), path.join(assets, 'fetch-nightly.py'));
     writeFileSync(path.join(assets, 'apex-deck-install'), installer, { mode: 0o755 });
     writeFileSync(path.join(assets, `${channels[channel].APP_ID}.desktop`), desktopEntry(channel));
     const icons = path.join(repo, 'build/icons');

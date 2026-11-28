@@ -115,7 +115,13 @@ pub(crate) async fn read(shell: &impl Shell, w: &Workflow, data: &Path) -> Resul
     // The same reading the merge worker uses, as if the merge had been asked for.
     let mut asked = w.clone();
     asked.phase = Phase::Checks;
+    asked.pr = Some(number);
     let decision = reconcile(&asked, &pr, true);
+    match decision {
+        Decision::HeadChanged => return Ok(Readiness::unknown("The pull request changed. Review the new commit.")),
+        Decision::Closed => return Ok(Readiness::unknown("This pull request is closed.")),
+        _ => {}
+    }
     if let Decision::Finish(phase, detail) = &decision {
         // Merged already: nothing to offer.
         if *phase == Phase::Merged {

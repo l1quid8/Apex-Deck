@@ -237,7 +237,7 @@ test('pull request cards and Ship it reach only a service that supports them, ad
  f.handlers['a:personal_ship']=args=>{sent.push(['ship',args]);return {message:'Deck is merging PR #84.'};};
  f.handlers['a:room_thread_git_action']=args=>{sent.push(['cancel',args]);return {message:'Confirming cancellation with GitHub…'};};
  assert.deepEqual((await lane.shipOffers()).offers.map(offer=>offer.pr),[84]);
- assert.equal((await lane.ship(84,head)).message,'Deck is merging PR #84.');
+ assert.equal((await lane.ship(84,head,expected.repo)).message,'Deck is merging PR #84.');
  assert.equal((await lane.cancelShip('r',expected)).message,'Confirming cancellation with GitHub…');
- assert.deepEqual(sent,[['offers',{assistantId:'asst-1'}],['ship',{assistantId:'asst-1',pr:84,head}],['cancel',{id:'r',action:{kind:'cancel_merge',expected}}]]);
+ assert.deepEqual(sent,[['offers',{assistantId:'asst-1'}],['ship',{assistantId:'asst-1',pr:84,head,repo:expected.repo}],['cancel',{id:'r',action:{kind:'cancel_merge',expected}}]]);
 });

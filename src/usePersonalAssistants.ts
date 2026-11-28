@@ -249,7 +249,7 @@ export class PersonalAssistantsCollection {
       undoAdmin: row.assistant.adminTrust === undefined ? undefined : receiptId => call("personal_admin_undo", {assistantId: need(), receiptId}),
       setAdminTrust: row.assistant.adminTrust === undefined ? undefined : trust => call<PersonalAssistantRecord>("personal_admin_trust_set", {assistantId: need(), trust}),
       shipOffers: route.supports?.("assistant_ship_v1") !== true ? undefined : () => call("personal_ship_offers", {assistantId: need()}),
-      ship: route.supports?.("assistant_ship_v1") !== true ? undefined : (pr, head) => call("personal_ship", {assistantId: need(), pr, head}),
+      ship: route.supports?.("assistant_ship_v1") !== true ? undefined : (pr, head, repo) => call("personal_ship", {assistantId: need(), pr, head, repo}),
       cancelShip: route.supports?.("assistant_ship_v1") !== true ? undefined : (room, expected) => call("room_thread_git_action", {id: room, action: {kind: "cancel_merge", expected}}),
       sendRequest: route.supports?.("assistant_voice_v1") !== true ? undefined : async (text, requestId) => {
         const result = await afterResult("personal_send", { requestId, text, ...sendContext() });

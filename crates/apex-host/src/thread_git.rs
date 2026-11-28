@@ -128,6 +128,7 @@ pub enum Phase {
     Submitting,
     Cancelling,
     Cancelled,
+    Superseded,
     Failed,
     Blocked,
     Merged,
@@ -150,6 +151,12 @@ pub struct Workflow {
     pub result_oid: Option<String>,
     pub pushed: bool,
     pub fix_requested: bool,
+    #[serde(default)]
+    pub local_check_failed: bool,
+    #[serde(default)]
+    pub(crate) close_pending: bool,
+    #[serde(default)]
+    pub(crate) close_since: Option<usize>,
     /// Asked for from the decision card, where the checks had already passed:
     /// if they no longer do, the merge stops and nothing waits.
     #[serde(default)]
@@ -191,6 +198,9 @@ impl Workflow {
             result_oid: None,
             pushed: false,
             fix_requested: false,
+            local_check_failed: false,
+            close_pending: false,
+            close_since: None,
             ready_only: false,
             kept_edits: 0,
             relayed_by: None,
@@ -217,12 +227,13 @@ impl Workflow {
         if self.pending() || self.phase == Phase::Merged {
             return Ok(());
         }
-        if !(matches!(self.phase, Phase::Ready | Phase::Cancelled) || (retry && self.phase == Phase::Blocked)) {
+        if !(matches!(self.phase, Phase::Ready | Phase::Cancelled) || (retry && (self.phase == Phase::Blocked || (self.phase == Phase::Failed && !self.local_check_failed)))) {
             return Err(self.detail.clone());
         }
         self.generation += 1;
         self.relayed_by = None;
         self.phase = Phase::Preparing;
+        self.local_check_failed = false;
         self.detail = "Publishing the commit…".into();
         Ok(())
     }
@@ -283,6 +294,60 @@ impl ThreadGit {
                 .collect())
         })
     }
+    pub(crate) fn workflows(&self) -> Result<Vec<(String, Workflow)>, String> {
+        self.edit(|rooms| Ok(rooms.iter()
+            .filter(|(_, w)| w.close_pending || (!w.pending() && !matches!(w.phase, Phase::Merged | Phase::Blocked)))
+            .map(|(room, w)| (room.clone(), w.clone()))
+            .collect()))
+    }
+
+    pub(crate) fn set_pr(&self, room: &str, expected: &Workflow, pr: u64) -> Result<Workflow, String> {
+        let mut next = expected.clone();
+        next.pr = Some(pr);
+        self.save_observation(room, expected, next.clone())?;
+        Ok(next)
+    }
+
+    pub(crate) fn mark_closed(&self, room: &str, expected: &Workflow) -> Result<Workflow, String> {
+        let mut next = expected.clone();
+        next.phase = Phase::Blocked;
+        next.close_pending = true;
+        next.close_since = None;
+        next.detail = "The pull request was closed without merging.".into();
+        self.save_observation(room, expected, next.clone())?;
+        Ok(next)
+    }
+
+    pub(crate) fn start_close_note(&self, room: &str, expected: &Workflow, first_seq: usize) -> Result<Workflow, String> {
+        let mut next = expected.clone();
+        next.close_since = Some(first_seq);
+        self.save_observation(room, expected, next.clone())?;
+        Ok(next)
+    }
+
+    pub(crate) fn finish_close(&self, room: &str, expected: &Workflow) -> Result<(), String> {
+        let mut next = expected.clone();
+        next.close_pending = false;
+        self.save_observation(room, expected, next)
+    }
+
+    pub(crate) fn mark_observed_merge(&self, room: &str, expected: &Workflow, oid: String, head: String) -> Result<(), String> {
+        let mut next = expected.clone();
+        next.result_oid = Some(oid);
+        next.head = head;
+        next.phase = Phase::Syncing;
+        next.detail = "Updating the local checkout…".into();
+        self.save_observation(room, expected, next)
+    }
+
+    fn save_observation(&self, room: &str, expected: &Workflow, next: Workflow) -> Result<(), String> {
+        if self.update(room, expected, |w| *w = next)? {
+            Ok(())
+        } else {
+            Err("The workflow changed while checking the pull request.".into())
+        }
+    }
+
     // Every async result compares its complete starting state before applying.
     fn update(
         &self,
@@ -331,6 +396,9 @@ impl ThreadGit {
         let repo = repository(&read(&["remote", "get-url", "--push", "origin"])?)?;
         self.edit(|r| {
             let current = r.get(room);
+            if current.is_some_and(|w| w.close_pending) {
+                return Err("Deck is finishing the previous closed pull request.".into());
+            }
             let same = current.is_some_and(|w| {
                 w.head == sha && w.repo == repo && w.branch == branch && w.root == root
             });
@@ -365,6 +433,9 @@ impl ThreadGit {
                         detail: "Waiting for checks".into(),
                         pushed: false,
                         fix_requested: false,
+                        local_check_failed: false,
+                        close_pending: false,
+                        close_since: None,
                         ready_only: false,
                         kept_edits: 0,
                         relayed_by: None,
@@ -383,18 +454,21 @@ impl ThreadGit {
     }
     /// From the thread folder's Git panel.
     pub fn admit(&self, room: &str, expected: &WorkflowKey) -> Result<String, String> {
-        self.admit_with(room, expected, false, false)
+        self.admit_with(room, expected, false, false, None)
     }
     /// A merge asked for from the decision card, after its checks passed.
     pub fn admit_ready(&self, room: &str, expected: &WorkflowKey) -> Result<String, String> {
-        self.admit_with(room, expected, true, true)
+        self.admit_with(room, expected, true, true, None)
     }
     /// A merge asked for from the decision card while its checks were still
     /// running, with nothing else in the way: it waits for them.
     pub fn admit_waiting(&self, room: &str, expected: &WorkflowKey) -> Result<String, String> {
-        self.admit_with(room, expected, false, true)
+        self.admit_with(room, expected, false, true, None)
     }
-    fn admit_with(&self, room: &str, expected: &WorkflowKey, ready_only: bool, retry: bool) -> Result<String, String> {
+    pub(crate) fn admit_relay(&self, room: &str, expected: &WorkflowKey, ready_only: bool, relay: (u64, &str)) -> Result<String, String> {
+        self.admit_with(room, expected, ready_only, true, Some(relay))
+    }
+    fn admit_with(&self, room: &str, expected: &WorkflowKey, ready_only: bool, retry: bool, relay: Option<(u64, &str)>) -> Result<String, String> {
         self.edit(|rooms| {
             let w = rooms
                 .get_mut(room)
@@ -406,8 +480,17 @@ impl ThreadGit {
             if w.generation != expected.generation && !w.pending() && w.phase != Phase::Merged {
                 return Err("Refresh the current branch before merging.".into());
             }
+            if let Some((pr, _)) = relay {
+                if w.pr.is_some_and(|saved| saved != pr) || (w.pending() && w.pr != Some(pr)) {
+                    return Err("The pull request changed. Refresh the card.".into());
+                }
+            }
             let before = w.generation;
             w.request(retry)?;
+            if let Some((pr, assistant)) = relay {
+                w.pr = Some(pr);
+                w.relayed_by = Some(assistant.to_owned());
+            }
             if w.generation != before {
                 w.ready_only = ready_only;
             }
@@ -455,15 +538,6 @@ impl ThreadGit {
     /// Every thread whose merge request is for this branch of this repository.
     pub fn find(&self, repo: &str, branch: &str) -> Result<Vec<(String, Workflow)>, String> {
         self.edit(|rooms| Ok(rooms.iter().filter(|(_, w)| w.repo == repo && w.branch == branch).map(|(room, w)| (room.clone(), w.clone())).collect()))
-    }
-    /// The merge of `expected`'s commit now in flight was approved through
-    /// `assistant`. `false` when that merge is no longer the one in flight.
-    pub fn relayed(&self, room: &str, expected: &WorkflowKey, assistant: &str) -> Result<bool, String> {
-        self.edit(|rooms| {
-            let Some(w) = rooms.get_mut(room).filter(|w| expected.names_commit(w) && w.pending()) else { return Ok(false) };
-            w.relayed_by = Some(assistant.to_owned());
-            Ok(true)
-        })
     }
     #[cfg(test)]
     pub(crate) fn put(&self, room: &str, w: Workflow) -> Result<(), String> {
@@ -542,6 +616,7 @@ pub async fn push(data: &Path, state: &State) -> Result<(), String> {
 mod github;
 pub(crate) mod ship;
 pub use github::checks;
+pub(crate) use github::{find_pr, observe_pr};
 pub use github::preflight::{Light, Line, Readiness};
 pub use github::readiness;
 #[cfg(test)]

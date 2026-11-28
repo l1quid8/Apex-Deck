@@ -37,14 +37,14 @@ const listeners = new Set();
 function changed(){ for (const cb of listeners) cb({replySuggestions:mode}); }
 window.scene = next => {kind=next;changed();};
 window.actions=[];window.expected=[];
-window.steps=()=>recordQuestion('r',{type:'next_steps',id:'bot',steps:[{label:'Measure',prompt:'Measure again'}],pending:false});
+window.steps=()=>recordQuestion('r',{type:'next_steps',id:'bot',steps:[{label:'Measure',prompt:'Measure again'},{label:'Blue',prompt:'I prefer blue'},{label:'Red',prompt:'I prefer red'}],pending:false});
 const backend = {...await getBackend(),demo:false,
   roomState:async()=>({snapshot,active:[],approvals:[],questions:[],mounts:[]}),roomClose:async()=>{},
   onSettingsChanged:async cb=>{listeners.add(cb);return ()=>listeners.delete(cb);},
   call:async(cmd,args)=>{
     if(cmd==='settings_load') return {replySuggestions:mode};
     if(cmd==='settings_reply_suggestions_set'){mode=args.mode;changed();return {mode};}
-    if(cmd==='room_reply_decision') return {mode,replySeq:1,checkout,decision:cards[kind] && (mode==='decision_card'||kind==='merging') ?
+    if(cmd==='room_reply_decision') return {mode,replySeq:1,checkout,decision:cards[kind] && (mode!=='off'||kind==='merging') ?
       {kind,key:kind+'-1',head,turns:['question','fix_checks'].includes(kind)?1:0,dismissible:kind!=='merging',cancellable:false,...cards[kind]} : null};
     if(cmd==='room_git_status') return {head,files:[],workflow:{head,...checkout}};
     if(cmd==='room_thread_git_action'){window.actions.push(args.action.kind);window.expected.push(args.action.expected);kind=args.action.kind==='merge_ready'?'merging':'none';return {message:'Action recorded'};}
@@ -54,7 +54,7 @@ const backend = {...await getBackend(),demo:false,
 // Alfred's conversation: the same pull request under a reply that names it.
 window.shipped=[];
 const lane = {offline:false,
-  ship:async(pr,head)=>{window.shipped.push({pr,head});if(window.refuse)throw new Error("Couldn't ship PR #84: main has no required checks on GitHub. Nothing was merged.");return {message:'Deck is merging PR #84 (commit aaaaaaaa on fix/alert). The result will be posted here.'};},
+  ship:async(pr,head,repo)=>{window.shipped.push({pr,head,repo});if(window.refuse)throw new Error("Couldn't ship PR #84: main has no required checks on GitHub. Nothing was merged.");return {message:'Deck is merging PR #84 (commit aaaaaaaa on fix/alert). The result will be posted here.'};},
   cancelShip:async(room,expected)=>{window.shipped.push({room,expected});return {message:'Confirming cancellation with GitHub…'};}};
 const offer = (state, card, extra={}) => ({pr:84,messageId:'pm-1',state,room:'r',checkout,card:card&&{key:state,kind:'merge',head,turns:0,dismissible:true,cancellable:false,...card},...extra});
 const offers = [
@@ -76,8 +76,8 @@ export function App(){return <main className="rail" style={{display:'block',widt
   },
 };
 
-test('old Next steps settings read as On and Tab fills the draft through the suggestion handler', () => {
-  assert.equal(suggestionsMode({ replySuggestions: 'next_steps' }), 'decision_card');
+test('Next steps preferences round trip and Tab fills the draft through the suggestion handler', () => {
+  assert.equal(suggestionsMode({ replySuggestions: 'next_steps' }), 'next_steps');
   const source = fs.readFileSync('src/ChatPane.tsx', 'utf8');
   assert.match(source, /formKey\(key, text === "", form, highlighted\)/);
   assert.match(source, /act\.act === "fill" && form\.kind === "steps"\) fillStep\(/);
@@ -128,6 +128,16 @@ test('desktop switches suggestion modes, dispatches once and keeps Cancel access
     assert.equal(await run(hint),false);
     await run('window.scene("none")');
     await until(hint);
+    await choose('next_steps');
+    await until('document.querySelectorAll(".reply-next-step").length===3');
+    assert.equal(await run(hint),false);
+    await key('Tab');
+    assert.equal(await run(input+'.value'),'');
+    assert.equal(await run('document.querySelector(".usage-credit-chip").textContent'),'Usage credits');
+    await shot('desktop-three-suggestions');
+    await choose('decision_card');
+    await until(hint);
+    assert.equal(await run('document.querySelectorAll(".reply-next-step").length'),0);
     await shot('desktop-suggestion-hint');
     await key('Tab');await until(input+'.value==="Measure again"');
     await shot('desktop-suggestion-filled');
@@ -192,7 +202,7 @@ test('the pull request card in the assistant conversation ships, cancels and rep
     assert.equal(await run('document.querySelectorAll('+JSON.stringify(cardAt(1)+' .pull-status li')+').length'),4);
     await run('(()=>{const b=document.querySelector('+JSON.stringify(cardAt(1)+' .primary')+');b.click();b.click();})()');
     await until('!!document.querySelector('+JSON.stringify(cardAt(1)+' .result')+')');
-    assert.deepEqual(await run('window.shipped'),[{pr:84,head:'a'.repeat(40)}]);
+    assert.deepEqual(await run('window.shipped'),[{pr:84,head:'a'.repeat(40),repo:'example/deck'}]);
     assert.match(await text(cardAt(1)+' .result'),/^Deck is merging PR #84/);
     // Blocked: off, with the reason beside it.
     assert.equal(await run('document.querySelector('+JSON.stringify(cardAt(2)+' .primary')+').disabled'),true);

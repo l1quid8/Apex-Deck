@@ -43,6 +43,7 @@ test('Model switching and supported speed selections persist when the quick sele
         for(const tool of ['claude_code','codex','gemini','grok','muse','api']){
           await win.webContents.executeJavaScript('window.fixture.mount('+JSON.stringify(tool)+')');
           await wait(()=>document.querySelector('.model-select-trigger'));
+          if (tool === 'api') assert.equal(await run(()=>document.body.textContent.includes('This model can read images')), false);
           await run(()=>document.querySelector('.model-select-trigger').click());
           await wait(()=>document.querySelector('.model-menu'));
           assert.equal(await run(()=>!!document.querySelector('[aria-label="Filter models"]')),true,'search for '+tool);

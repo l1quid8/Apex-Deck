@@ -3,7 +3,7 @@ import { Component, useEffect, useMemo, useState, type ReactNode } from "react";
 import { InlineAnswer } from "./InlineAnswer.tsx";
 import { AnswerCard, CardFallback } from "./AnswerCard.tsx";
 import { cardKey, fingerprint, type AnswerStore } from "./contract.ts";
-import { readCard } from "./schema.ts";
+import { readCard, type GeneratedCard } from "./schema.ts";
 import { GeneratedAnswerCard } from "./GeneratedAnswerCard.tsx";
 import { latestCardVersion } from "./generatedRun.ts";
 
@@ -26,12 +26,13 @@ interface Props {
   executionEpoch?: string;
   executionAllowed?: boolean;
   autoStartKey?: string | null;
+  renderGenerated?: (card: GeneratedCard, version: number) => ReactNode;
   onDiscuss?: (snapshot: string) => void;
   onOpen: (target: string) => void;
 }
 
 /** A card in a finished reply, with the settings saved for it; the fallback when the block isn't one. */
-export function ThreadCard({ source, seq, author, versions, answers, readOnly = false, threadId = "", hostId = "local", executionEpoch = "", executionAllowed = true, autoStartKey = null, onDiscuss, onOpen }: Props) {
+export function ThreadCard({ source, seq, author, versions, answers, readOnly = false, threadId = "", hostId = "local", executionEpoch = "", executionAllowed = true, autoStartKey = null, renderGenerated, onDiscuss, onOpen }: Props) {
   const read = useMemo(() => readCard(source), [source]);
   const print = useMemo(() => fingerprint(source), [source]);
   const key = read.ok && read.card.kind === "comparison" ? cardKey(seq, read.card.cardId) : "";
@@ -40,6 +41,7 @@ export function ThreadCard({ source, seq, author, versions, answers, readOnly = 
   if (!read.ok) return <CardFallback reason={read.reason} source={source} hideSource={read.kind === "generated"} />;
   if (read.card.kind === "generated") {
     const version = versions.get(cardKey(seq, read.card.cardId)) ?? 1;
+    if (renderGenerated && autoStartKey === cardKey(seq, read.card.cardId) && version === latestCardVersion(versions, read.card.cardId)) return renderGenerated(read.card, version);
     return <GeneratedAnswerCard
       key={`${hostId}:${threadId}:${seq}:${source}`}
       card={read.card} source={source} version={version} author={author}

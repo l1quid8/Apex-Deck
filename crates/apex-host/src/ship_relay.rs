@@ -74,7 +74,7 @@ fn asked_line(line: &str, name: &[String]) -> Vec<u64> {
         let pair = (next, word(at + 1).unwrap_or(""));
         if matches!(pair, ("go", "ahead") | ("looks", "good") | ("you", "can") | ("all", "good")) {
             at += 2;
-        } else if next.starts_with('@')
+        } else if (at == 0 && name.len() == 1 && next.strip_prefix('@') == Some(name[0].as_str()))
             || (at < name.len() && name[at] == next)
             || matches!(next, "ok" | "okay" | "yes" | "yep" | "yeah" | "sure" | "great" | "good" | "perfect" | "please" | "pls" | "now" | "so" | "then" | "and" | "alright" | "cool" | "nice" | "thanks" | "lgtm" | "approved" | "hey" | "hi" | "let's" | "lets")
         {
@@ -91,7 +91,6 @@ fn asked_line(line: &str, name: &[String]) -> Vec<u64> {
         at += 1;
     }
     let mut found = Vec::new();
-    let mut ended = false;
     while let Some(next) = word(at) {
         let marker = match (next, word(at + 1)) {
             ("pull", Some("request" | "requests")) => 2,
@@ -105,7 +104,6 @@ fn asked_line(line: &str, name: &[String]) -> Vec<u64> {
             break;
         };
         found.push(pr);
-        let broke = words[at + marker].1;
         at += marker + 1;
         // "84, 85", "84 and 85": another one follows. Otherwise the list is over.
         let joined = matches!(word(at), Some("and" | "&" | "+"));
@@ -133,7 +131,8 @@ fn asked_line(line: &str, name: &[String]) -> Vec<u64> {
             ("to" | "into" | "on", Some("main")) => 2,
             ("thank", Some("you")) => 2,
             ("now" | "please" | "pls" | "thanks" | "it" | "and", _) => 1,
-            ("then", _) => break,
+            ("then", Some("continue")) if at + 2 == words.len() => 2,
+            ("then", Some("update")) if words[at+2..].iter().map(|(w, _)| *w).eq(["the", "changelog"]) => 4,
             _ => return Vec::new(),
         };
         at += step;
@@ -255,39 +254,44 @@ impl Host {
 
     async fn ship_find_now(self: &Arc<Self>, assistant: &PersonalAssistant, pr: u64, full_only: bool) -> Lookup {
         let data = self.data_dir().to_path_buf();
-        let folders: Vec<PathBuf> = assistant.projects.iter().filter(|binding| !full_only || binding.tools == ProjectTools::Full).map(|binding| PathBuf::from(&binding.project.cwd)).filter(|cwd| cwd.is_dir()).collect();
-        if folders.is_empty() {
+        let folders: Vec<_> = assistant.projects.iter().map(|binding| (PathBuf::from(&binding.project.cwd), binding.tools == ProjectTools::Full)).collect();
+        if folders.is_empty() || (full_only && !folders.iter().any(|(_, full)| *full)) {
             return Lookup::No(if full_only { format!("none of {}'s projects has saved Full access", assistant.name) } else { format!("{} has no project on this Mac", assistant.name) });
         }
         // A repository is named by where it pushes, as receipts are.
         let repos = tokio::task::spawn_blocking(move || {
-            let mut repos: Vec<(String, PathBuf)> = Vec::new();
-            for cwd in folders {
+            let mut repos: Vec<(String, PathBuf, bool)> = Vec::new();
+            for (cwd, full) in folders {
                 let named = crate::git_changes::git(&data, &cwd, None, &["remote", "get-url", "--push", "origin"]).ok().and_then(|url| crate::thread_git::repository(url.trim()).ok());
-                if let Some(repo) = named.filter(|repo| !repos.iter().any(|(seen, _)| seen == repo)) {
-                    repos.push((repo, cwd));
+                let Some(repo) = named else { return Err("A bound project could not be identified.".to_owned()); };
+                if let Some((_, _, authorized)) = repos.iter_mut().find(|(seen, _, _)| *seen == repo) {
+                    *authorized |= full;
+                } else {
+                    repos.push((repo, cwd, full));
                 }
             }
-            repos
-        })
-        .await
-        .unwrap_or_default();
+            Ok(repos)
+        }).await;
+        let repos = match repos { Ok(Ok(repos)) => repos, Ok(Err(why)) => return Lookup::No(why), Err(_) => return Lookup::No("Project lookup failed.".into()) };
         let mut pulls = Vec::new();
-        for (repo, cwd) in repos {
+        for (repo, cwd, full) in repos {
             match self.ship_pull(&cwd, &repo, pr).await {
-                Ok(pull) => pulls.push((repo, pull)),
+                Ok(pull) => pulls.push((repo, pull, full)),
                 // Only GitHub's own "no such pull request" rules a repository out.
                 Err(why) if why.contains("Could not resolve to a PullRequest") || why.contains("no pull requests found") => {}
                 Err(_) => return Lookup::No(format!("GitHub couldn't be read for {repo} just now")),
             }
         }
-        if pulls.iter().filter(|(_, pull)| pull.state == "OPEN").count() > 1 {
-            let names = pulls.iter().map(|(repo, _)| repo.as_str()).collect::<Vec<_>>().join(" and ");
+        if pulls.iter().filter(|(_, pull, _)| pull.state == "OPEN").count() > 1 {
+            let names = pulls.iter().map(|(repo, _, _)| repo.as_str()).collect::<Vec<_>>().join(" and ");
             return Lookup::No(format!("{names} each have a PR #{pr}; ship it from its own thread"));
         }
-        let Some((repo, pull)) = pulls.iter().find(|(_, pull)| pull.state == "OPEN").or(pulls.first()).cloned() else {
+        let Some((repo, pull, full)) = pulls.iter().find(|(_, pull, _)| pull.state == "OPEN").or(pulls.first()).cloned() else {
             return Lookup::No(format!("GitHub has no PR #{pr} in {}'s projects", assistant.name));
         };
+        if full_only && !full {
+            return Lookup::No(format!("{repo} lacks saved Full access for {}", assistant.name));
+        }
         let saved = self.thread_git.find(&repo, &pull.head_ref_name).unwrap_or_default();
         match pull.state.as_str() {
             "OPEN" => {}
@@ -344,7 +348,7 @@ impl Host {
     /// `by_words`: they said it to the assistant, which needs the assistant's
     /// saved Full access; otherwise they tapped the card, which shows `head`.
     /// What is now happening, or why nothing was merged.
-    async fn ship_now(self: &Arc<Self>, assistant_id: &str, pr: u64, head: Option<&str>, by_words: bool) -> Result<String, String> {
+    async fn ship_now(self: &Arc<Self>, assistant_id: &str, pr: u64, shown: Option<(&str, &str)>, by_words: bool) -> Result<String, String> {
         let assistant = self.personal_get(assistant_id)?;
         if by_words {
             if assistant.paused || assistant.archived_at.is_some() {
@@ -360,7 +364,8 @@ impl Host {
             Lookup::Merged(detail) => return Ok(detail),
             Lookup::No(why) => return Err(format!("{why}. Nothing was merged.")),
         };
-        if head.is_some_and(|shown| shown != workflow.head) {
+        if shown.is_some_and(|(repo, _)| repo != workflow.repo) { return Err("The repository changed. Refresh the card.".into()); }
+        if shown.is_some_and(|(_, head)| head != workflow.head) {
             return Err("it has a new commit since this card was shown. Nothing was merged.".into());
         }
         if self.handle(&room).is_err() {
@@ -382,8 +387,7 @@ impl Host {
             workflow = self.thread_git.get(&room)?.filter(|w| w.head == workflow.head).ok_or("its thread moved on. Nothing was merged.")?;
         }
         let key = WorkflowKey::of(&workflow);
-        self.room_thread_git_action(room.clone(), ThreadGitAction::MergeReady { expected: Shown::Key(key.clone()) }).await?;
-        self.thread_git.relayed(&room, &key, assistant_id)?;
+        self.thread_git_action_for(room.clone(), ThreadGitAction::MergeReady { expected: Shown::Key(key) }, Some((pr, assistant_id))).await?;
         self.ship_relay.finds.lock().unwrap().retain(|(owner, number, _), _| !(owner == assistant_id && *number == pr));
         let how = if by_words { format!("You told {} to ship", assistant.name) } else { format!("In {}'s conversation you tapped Ship it for", assistant.name) };
         let commit = short(&workflow.head);
@@ -419,8 +423,8 @@ impl Host {
     }
 
     /// The card's tap in an assistant's conversation.
-    pub async fn personal_ship(self: &Arc<Self>, assistant_id: String, pr: u64, head: String) -> Result<serde_json::Value, String> {
-        let message = self.ship_now(&assistant_id, pr, Some(&head), false).await.map_err(|why| format!("Couldn't ship PR #{pr}: {}", brief(&why)))?;
+    pub async fn personal_ship(self: &Arc<Self>, assistant_id: String, pr: u64, repo: String, head: String) -> Result<serde_json::Value, String> {
+        let message = self.ship_now(&assistant_id, pr, Some((&repo, &head)), false).await.map_err(|why| format!("Couldn't ship PR #{pr}: {}", brief(&why)))?;
         Ok(serde_json::json!({ "message": message }))
     }
 
@@ -454,7 +458,7 @@ impl Host {
             let checkout = serde_json::json!({ "repo": workflow.repo, "branch": workflow.branch, "root": workflow.root, "generation": workflow.generation });
             let (state, card) = if workflow.pending() {
                 ("merging", Some(crate::reply_suggestions::merging_card(&room, 0, &workflow)))
-            } else if workflow.phase == Phase::Failed {
+            } else if workflow.phase == Phase::Failed && workflow.local_check_failed {
                 let mut card = crate::reply_suggestions::merging_card(&room, 0, &workflow);
                 card.kind = crate::reply_suggestions::Kind::Merge;
                 card.cancellable = false;
@@ -558,6 +562,8 @@ mod tests {
             "Plan only. Do not execute or edit files.\n\nship PR 84",
             "Thanks for the summary.\nShip PR 84",
             "never merge PR 84",
+            "@sam merge PR 84",
+            "merge PR 84 then only after approval",
         ] {
             assert_eq!(said(text), Vec::<u64>::new(), "{text}");
         }

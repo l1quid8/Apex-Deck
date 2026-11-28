@@ -138,7 +138,7 @@ export type PersonalLane = {
   /** Pull request cards under this conversation's recent replies. */
   shipOffers?(): Promise<{ offers: import("./replyDecision").ShipOffer[] }>;
   /** The card's Ship it tap, for the commit it showed. */
-  ship?(pr: number, head: string): Promise<{ message: string }>;
+  ship?(pr: number, head: string, repo: string): Promise<{ message: string }>;
   cancelShip?(room: string, expected: import("./generated/protocol").WorkflowKey): Promise<{ message: string }>;
   sendRequest?(text: string, requestId: string): Promise<{eventId: string}>;
   cancelReply?(eventId: string): Promise<void>;

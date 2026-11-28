@@ -53,13 +53,17 @@ import { SavedSteps, WorkSteps, InterruptedSteps } from "../WorkSteps.tsx";
 import { createStepsIndexLoader, dropStepsFrom, readReplySteps, rememberSteps, savedEntry } from "../workSteps.ts";
 import { PreparingCard } from "../interactiveAnswers/AnswerCard.tsx";
 import { CARD_LANGUAGE } from "../interactiveAnswers/contract.ts";
-import { cardVersions } from "../interactiveAnswers/share.ts";
+import { PhoneGeneratedCard } from "./PhoneGeneratedCard";
+import { nativeCards } from "./generatedCards";
+import { cardVersions, discussDraft, latestGeneratedCard } from "../interactiveAnswers/share.ts";
 import { ThreadCard } from "../interactiveAnswers/ThreadCard.tsx";
 import { QuestionForm } from "../QuestionForm";
 import { ReplyNextSteps } from "../ReplyNextSteps";
 import { PhonePictures } from "./PhonePictures";
 import { PictureCache, pictureBlock } from "./pictureRules";
-import { attachedImages, replyImages } from "../attachments";
+import { mediaKind } from "../media";
+import { checkingImages, imageInputNotice } from "../imageInput";
+import { attachedImages, isImage, replyImages } from "../attachments";
 import { applyQuestionEvent, formView, questionOnly, restoreQuestions, type Offer, type ThreadAsks } from "../questions";
 import { withAttachments } from "../attachments";
 import { loadTldr, saveTldr, splitTldr, tldrFor, wiggle, withTldr } from "../tldr";
@@ -84,7 +88,7 @@ import {
   connectionKey, isPaired, withHints, readHostIds, withMacHostIds,
   type DirectMachine, type Machine, type PairedMachine, type MeterRow, type TurnChange, type LinkStatus, type LinkView, type MachineKind,
 } from "../phoneRules";
-import { recipientName } from "../recipients";
+import { mentionTarget, recipientName } from "../recipients";
 import { mentionFor } from "../slug";
 import { ageWords, homeShort, hostTints, noteActive, sidebarSections, unarchiveThreads } from "../sidebarModel";
 import { webSocketConnect } from "../daemon/webSocketLink";
@@ -182,7 +186,7 @@ const NEW_THREAD: RoomOptions = { policy: "mention", max_bot_hops: null };
 type Tab = "tasks" | "threads" | "agents" | "code" | "library" | "machines" | "machine" | "computer" | "app-permissions" | "settings" | "appearance" | "log";
 type Draft = { text: string; files: ComposerAttachment[] };
 /** A message on its way, as it was in the box: its text and files, and the quotes with their Send to. */
-type QueuedDraft = { draft: Draft; quotes: ReplyQuote[]; inBox: boolean; failed?: boolean };
+type QueuedDraft = { draft: Draft; quotes: ReplyQuote[]; inBox: boolean; imageWarning?: string; failed?: boolean };
 type Pending = { id: string; workspaceId: string; agents?: string[] };
 type Ask = { paneId: string; workspaceId: string };
 type SheetKind = "project" | "where" | "tools";
@@ -197,6 +201,8 @@ const COPIED_MS = 1500;
 type ShownThread = { id: string; hostId: string };
 type SavedStepsFor = { id: string; hostId: string; index: import("../types").StepsIndex | null };
 type Room = {
+  /** Authenticated connection that delivered this snapshot. Never inferred from a cached transcript. */
+  cardSession?: string;
   /** The room and the machine it came from: two machines can each have a room with the same id. */
   id: string; hostId: string; messages: Message[]; approvals: { id: string; request: string; action: import("../types").ProposedAction }[]; participants: Person[]; asks: ThreadAsks; plan: boolean; policy: TurnPolicy;
   /** Each bot's turn in progress, with its reply so far. */
@@ -990,6 +996,10 @@ export function PhoneApp() {
   const openKey = openPane ? threadKey(openPane, openHostId) : openId;
   const openPath = openPane?.executionPath ?? openWorkspace?.path ?? "";
   const openLink = linkOf(openHostId) ?? hostOf(openWorkspace);
+  const cardHost = phoneHost(openHostId);
+  const cardConnection = cardHost?.connection.get();
+  const cardSession = cardConnection?.status.kind === "connected"
+    ? JSON.stringify([cardConnection.status.hostId, cardConnection.seenAt, cardConnection.revision]) : undefined;
   const runnerBackend=phoneHost(openHostId)?.backend;
   const [runner,setRunner,runnerHostOffset]=useRunner(runnerBackend,openPane?.id??null);
   const [runnerMode,setRunnerMode]=useState<RunnerKind|null>(null);
@@ -1454,7 +1464,24 @@ export function PhoneApp() {
         // Retry asks the bot again on the chat as it is, posting nothing, as on the desktop.
         if (kind === "turn") { await backend().roomTurn(paneId, to, hops ?? null); return; }
         const key = `${queueKey(hostId, paneId)}\u0000${text}`;
-        try { await postFromPhone(backend(), paneId, text, to, voice); }
+        try {
+          const api = backend();
+          if (attachedImages(text).length) {
+            const state = api.roomState ? await api.roomState(paneId) : await api.call<RoomState>("room_state", { id: paneId });
+            const configs = state.snapshot.participants;
+            const models = new Map<string, ApiModel[]>();
+            await Promise.all(configs.filter(p => to.includes(p.id)).map(async p => {
+              if (p.backend.kind !== "open_ai_compatible") return;
+              const list = await api.roomBotModels?.(paneId, p.id).catch(() => undefined);
+              const account = apiAccountKey(hostId, p.backend);
+              models.set(account, list ?? []);
+              setApiOffered(all => ({ ...all, [account]: { ...all[account], models: list ?? [] } }));
+            }));
+            const check = imageInputNotice(to, configs, b => models.get(apiAccountKey(hostId, b))?.find(m => m.id === b.model));
+            if (check && (check.blocked || check.text !== queuedDrafts.current.get(key)?.imageWarning)) throw new Error(check.text);
+          }
+          await postFromPhone(api, paneId, text, to, voice);
+        }
         catch (error) {
           if (voice) { phoneVoice.failed(hostId,paneId,to[0],voice.requestId,error); throw error; }
           throw unsentDraft(text, to, error);
@@ -1684,6 +1711,7 @@ export function PhoneApp() {
       setRoom({
         id: openPane.id,
         hostId: openHostId,
+        cardSession: state.live ? cardSession : undefined,
         messages: state.snapshot.transcript,
         approvals: state.approvals,
         participants: configs.map(toPerson),
@@ -1807,11 +1835,11 @@ export function PhoneApp() {
     return () => { live = false; if (retryTimer) clearTimeout(retryTimer); recovery.dispose(); stop(); refreshSteps.current = () => {}; retryThreadLoad.current = () => {}; };
     // Reloading follows the open thread and that machine's connection, not every keystroke.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [openPane?.id, openWorkspace?.id, openLink?.status, openHostId, openPath]);
+  }, [openPane?.id, openWorkspace?.id, openLink?.status, openHostId, openPath, cardSession]);
 
   // Who the message as typed goes to: its @names, or the bots named last when it has none.
   // Asked again as the draft changes and after each message, since a send can change it.
-  const [answerers, setAnswerers] = useState<{ paneId: string; ids: string[] } | null>(null);
+  const [answerers, setAnswerers] = useState<{ paneId: string; hostId: string; typed: string; ids: string[]; error?: string } | null>(null);
   const quotedNow = openKey ? quotes[openKey] ?? [] : [];
   const typed = openKey ? (quotedNow.length ? outgoingText(draftFor(openKey).text, quotedNow, room?.participants ?? []) : draftFor(openKey).text) : "";
   useEffect(() => {
@@ -1820,11 +1848,13 @@ export function PhoneApp() {
     if (!host || toLink(host.connection.get().status) !== "online") return;
     // An untagged message behind a queued tag goes where that tag goes, before the thread has heard it.
     const sticky = queuedSticky(typed, room.participants, room.policy, queued[queueKey(room.hostId, room.id)]?.items ?? []);
-    if (sticky) { setAnswerers({ paneId: room.id, ids: sticky }); return; }
+    if (sticky) { setAnswerers({ paneId: room.id, hostId: room.hostId, typed, ids: sticky }); return; }
     let live = true;
     // A short wait so typing doesn't ask the machine on every key; a slower answer for older text is ignored.
     const ask = window.setTimeout(() => {
-      host.backend.roomTargets(room.id, typed).then((ids) => { if (live) setAnswerers({ paneId: room.id, ids }); }).catch(() => {});
+      host.backend.roomTargets(room.id, typed).then((ids) => { if (live) setAnswerers({ paneId: room.id, hostId: room.hostId, typed, ids }); }).catch(() => {
+        if (live) setAnswerers({ paneId: room.id, hostId: room.hostId, typed, ids: [], error: "Couldn’t check who will receive this image. Edit the draft to retry." });
+      });
     }, typed ? 150 : 0);
     return () => { live = false; window.clearTimeout(ask); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1863,6 +1893,7 @@ export function PhoneApp() {
     // This thread's box, quotes and TL;DR, under its machine and id: a pending draft has neither yet.
     const box = openKey ?? id;
     const draft = draftFor(box);
+    if (imageNotice?.blocked) { setNotice(imageNotice.text); return; }
     const gate = threadSend(links, openLink.id, draft.text, draft.files.length);
     if (!gate.enabled) { if (gate.reason) setNotice(gate.reason); return; }
     const host = phoneHost(openLink.id);
@@ -1934,7 +1965,7 @@ export function PhoneApp() {
       // A bot still working gets it once it finishes; until then it waits on the phone as "Queued".
       // This resolves once the machine has it, or once it is queued; until then the box keeps it.
       const key = `${queueKey(host.machine.id, sentPane.id)}\u0000${body}`;
-      const entry: QueuedDraft = { draft, quotes: sentQuotes, inBox: true };
+      const entry: QueuedDraft = { draft, quotes: sentQuotes, inBox: true, imageWarning: imageNotice?.text };
       queuedDrafts.current.set(key, entry);
       try { await queueFor(sentPane.id, host.machine.id).send(body); }
       catch (error) { queuedDrafts.current.delete(key); throw error; }
@@ -2721,6 +2752,31 @@ export function PhoneApp() {
     (pid) => openRoom?.participants.find((p) => p.id === pid)?.display_name ?? pid, openLink.name) : [];
   const nextTo = openRoom && answerers?.paneId === openRoom.id ? answerers.ids : [];
   const queueing = nextTo.length > 0 && nextTo.every((pid) => pid in (openRoom?.working ?? {}));
+  const imageRoster = viewingPending ? pendingAgents : openRoom?.configs ?? [];
+  const hasImageDraft = !openChat && draft.files.some(file => isImage(file.name));
+  const imageModelRequests = JSON.stringify(hasImageDraft ? imageRoster.flatMap(config =>
+    config.backend.kind === "open_ai_compatible" ? [[config.id, apiAccountKey(openHostId, config.backend)]] : []) : []);
+  useEffect(() => {
+    let live = true;
+    const api = phoneHost(openHostId)?.backend;
+    for (const [id, key] of JSON.parse(imageModelRequests) as string[][]) {
+      const list = openRoom ? api?.roomBotModels?.(openRoom.id, id) : api?.agentBotModels?.(id);
+      (list ?? Promise.resolve([])).catch(() => []).then(models => {
+        if (live) setApiOffered(all => ({ ...all, [key]: { ...all[key], models } }));
+      }).catch(() => {});
+    }
+    return () => { live = false; };
+  }, [openHostId, openRoom?.id, imageModelRequests]);
+  const named = mentionTarget(draft.text, imageRoster);
+  const listedModel = (b: Extract<ParticipantConfig["backend"], { kind: "open_ai_compatible" }>) =>
+    apiOffered[apiAccountKey(openHostId, b)]?.models?.find(m => m.id === b.model);
+  const unnamed = imageRoster.filter(p => p.backend.kind !== "open_ai_compatible" || !mediaKind(listedModel(p.backend)));
+  const pendingTargets = named === "everyone" ? unnamed.map(p => p.id) : named.length ? named : unnamed.slice(0, 1).map(p => p.id);
+  const imageRouteReady = viewingPending || (openRoom && answerers?.paneId === openRoom.id && answerers.hostId === openHostId && answerers.typed === typed);
+  const imageNotice = !hasImageDraft ? null : !imageRouteReady ? checkingImages
+    : !viewingPending && answerers?.error ? { blocked: true, text: answerers.error }
+    : imageInputNotice(viewingPending ? pendingTargets : nextTo, imageRoster, b =>
+      apiOffered[apiAccountKey(openHostId, b)]?.models ? listedModel(b) : null);
   const sendGate = botSendGate(openLink ? threadSend(links, openLink.id, draft.text, draft.files.length) : { enabled: false, reason: "This thread's machine isn't paired with this phone." }, viewingPending ? pendingAgents.length : room?.participants.length ?? 0);
   const tints = hostTints(machines.filter((machine) => machine.kind === "server").map((machine) => machine.id));
   const machineIcon = (hostId: string, size = 16) => hostId === "local"
@@ -2729,6 +2785,9 @@ export function PhoneApp() {
   const started = Boolean(openPane && (openPane.assistantTaskId || (room && room.id === openPane.id ? room.messages.length : 0) > (openPane.fork?.at ?? 0) || openPane.activeAt));
   const inChat = tab === "threads" && openId !== null && (openPane !== null || viewingPending) && openWorkspace !== null && openLink !== null;
   const covered = chatSheet !== null || composerOpen || sheet !== null || menu !== null || ask !== null || browse !== null || botSheet !== null || pairing !== null || assistantWorkspaceId !== null || personalOpen || agentSheet !== null || worktreesOpen;
+  const cardHostId = openRoom && cardHost && cardConnection?.status.kind === "connected"
+    && !openChat?.movedTo && !openChat?.promotedTo && !openChat?.trashedAt && !openChat?.archived
+    ? JSON.stringify([isPaired(cardHost.machine) ? cardHost.machine.hostEndpointId : cardHost.machine.id, cardConnection.status.hostId]) : undefined;
   // Settings and Machines sit above a tab, so the tab they were opened from stays lit.
   const inMachinesFlow = tab === "machines" || tab === "machine" || tab === "computer" || tab === "app-permissions";
   const shownTab = inMachinesFlow ? machinesReturn.current : tab;
@@ -2918,6 +2977,9 @@ export function PhoneApp() {
             path={openPath}
             kind={openLink.kind}
             link={openLink}
+            cardHostId={cardHostId}
+            cardSessionFresh={Boolean(cardSession && openRoom?.cardSession === cardSession && !openRoom.stale)}
+            cardEpoch={cardSession ?? ""}
             hostIcon={machineIcon(openLink.id, 15)}
             started={started}
             messages={openRoom ? openRoom.messages : []}
@@ -2973,7 +3035,8 @@ export function PhoneApp() {
             onRemoveQueued={(item) => openPane && queues.current.get(queueKey(openHostId, openPane.id))?.remove(item)}
             onResume={() => openPane && queues.current.get(queueKey(openHostId, openPane.id))?.resume()}
             draft={draft}
-            gate={openChat ? chatGate : sendGate}
+            imageNotice={imageNotice?.text}
+            gate={openChat ? chatGate : imageNotice?.blocked ? { enabled: false, reason: imageNotice.text } : sendGate}
             sending={sending}
             attaching={reading > 0}
             fork={openPane?.fork}
@@ -3017,7 +3080,7 @@ export function PhoneApp() {
             }}
             // Questions wait above the composer; next steps follow the reply that offered them, as on the Mac.
             steps={(() => {
-              const view = formView(openRoom?.asks);
+              const view = formView(openRoom?.asks, 3);
               return view.kind === "steps" && openRoom ? { offer: view.offer, onStep: (step: NextStep, by: string) => { void sendStep(step, by, { id: openRoom.id, hostId: openRoom.hostId }); } } : null;
             })()}
             form={<QuestionForm phone view={questionOnly(formView(openRoom?.asks))} nameOf={(pid) => openRoom?.participants.find((p) => p.id === pid)?.display_name ?? pid}
@@ -3097,8 +3160,7 @@ export function PhoneApp() {
                 const host = phoneHost(link.id);
                 return link.status === "online" && host?.supports("reply_suggestions_v1") &&
                   <div className="ph-srow ph-preference ph-suggestion-setting" key={link.id}>
-                    <span className="ph-grow"><strong>Suggestions after a reply</strong><small>{link.name} · Shared with desktop</small></span>
-                    <ReplySuggestionsSetting backend={host.backend} />
+                    <ReplySuggestionsSetting backend={host.backend} hostName={link.name} />
                   </div>;
               })}
               <LockRow />
@@ -4066,6 +4128,7 @@ function ThreadView(props: {
   /** Look A's strip above the compose row, and look C's capsule under the title. Each draws only in its look. */
   callStrip?: ReactNode; callCapsule?: ReactNode;
   title: string; draftThread: boolean; project: string; machine: string; path: string; kind: MachineKind; link: LinkView;
+  cardHostId?: string; cardEpoch: string; cardSessionFresh: boolean;
   hostIcon: ReactNode; started: boolean; covered: boolean;
   messages: Message[]; approvals: { id: string; request: string; action: import("../types").ProposedAction }[];
   /** The thread hasn't arrived yet: on its way (slow past 10 s), or failed with why and being tried again. Null once it is here. */
@@ -4076,7 +4139,7 @@ function ThreadView(props: {
   /** Where /compact cut in, drawn as a line the person can open to read the summary. */
   compaction: Room["compaction"];
   participants: Person[]; working: PhoneWorking; progress?: TurnProgress; cut: PhoneCuts;
-  paneId: string; stepsIndex: import("../types").StepsIndex | null; loadedSteps: Map<number, import("../types").ReplySteps>; loadSteps(seq: number): Promise<import("../types").ReplySteps | null>; draft: Draft; gate: { enabled: boolean; reason: string };
+  paneId: string; stepsIndex: import("../types").StepsIndex | null; loadedSteps: Map<number, import("../types").ReplySteps>; loadSteps(seq: number): Promise<import("../types").ReplySteps | null>; draft: Draft; imageNotice?: string; gate: { enabled: boolean; reason: string };
   /** Who a message without an @name goes to: "Null", "everyone"; null while unknown. */
   to: string | null;
   /** The same, as bot ids, for the bar to light up. */
@@ -4152,7 +4215,7 @@ function ThreadView(props: {
   const decisionCard = decisionBackend && offer?.decision && canShowDecision && (pendingMerge || (!busy && decisionSeq !== null)) &&
     <ReplyDecisionCard key={offer.decision.key} backend={decisionBackend} room={props.paneId}
       offer={offer} refresh={refresh} focused={false} report={props.onDecisionResult} />;
-  const showList = !props.suggestionHost || (offer?.mode === "decision_card" && !offer.decision);
+  const showList = !props.suggestionHost || (offer && offer.mode !== "off" && !offer.decision);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const composerHistory = useComposerHistory(
     JSON.stringify([props.link.id, props.paneId]), props.draft.text,
@@ -4165,6 +4228,7 @@ function ThreadView(props: {
   const pill = usePillPress(JSON.stringify([props.link.id, props.paneId]));
   // Comparison settings stay read-only here. Built-in controls use local component state.
   const versions = useMemo(() => cardVersions(props.messages), [props.messages]);
+  const generatedCandidate = useMemo(() => latestGeneratedCard(props.messages), [props.messages]);
   // One stable reader per sender, so a picture isn't read again on every render.
   const pictureReaders = useMemo(() => new Map<string, (path: string) => Promise<ArrayBuffer>>(), [props.pictures.read]);
   const readPicture = (by: string | null) => {
@@ -4598,16 +4662,25 @@ function ThreadView(props: {
               {by(message.speaker.id)}
               {message.lateReplyFrom && <p className="late-reply-label">Late reply from {message.lateReplyFrom}</p>}
               {(() => {
-                const renderText = (text: string) => <div className="ph-md"><Markdown text={text} onOpen={(target) => { if (/^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} fence={(code) => (code.language === CARD_LANGUAGE
-                ? <ThreadCard threadId={props.paneId} hostId={props.link.id} source={code.text} seq={message.seq} author={message.speaker.kind === "bot" ? person(message.speaker.id).display_name : "Human"} versions={versions} answers={null} readOnly onOpen={(target) => { if (/^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} />
+                const renderText = (text: string, final = false) => <div className="ph-md"><Markdown text={text} onOpen={(target) => { if (/^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} fence={(code) => (code.language === CARD_LANGUAGE
+                ? <ThreadCard threadId={props.paneId} hostId={props.link.id} source={code.text} seq={message.seq} author={message.speaker.kind === "bot" ? person(message.speaker.id).display_name : "Human"} versions={versions} answers={null} readOnly autoStartKey={generatedCandidate?.key}
+                  renderGenerated={final && generatedCandidate?.source === code.text && nativeCards && props.cardHostId && !props.load?.failed && (props.cardSessionFresh || props.stale || props.load) ? (card, version) =>
+                    <PhoneGeneratedCard key={JSON.stringify([props.link.id, props.paneId, message.seq, code.text, props.cardEpoch])}
+                      hostId={props.covered || !props.cardSessionFresh ? undefined : props.cardHostId} threadId={props.paneId}
+                      messageId={JSON.stringify([message.origin ?? null, message.originSeq ?? message.seq, message.at ?? null, message.speaker])} card={card}
+                      onDiscuss={snapshot => {
+                        const author = message.speaker.kind === "bot" ? person(message.speaker.id).display_name : "";
+                        props.onDraft(discussDraft(props.draft.text, `From ${author}'s interface "${card.title}" (v${version}):\n${snapshot}`));
+                        inputRef.current?.focus();
+                      }} /> : undefined} onOpen={(target) => { if (/^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} />
                 : undefined)} /></div>;
                 const saved = savedEntry(props.stepsIndex, message.seq);
-                return saved ? <SavedSteps key={`${props.link.id}:${props.paneId}:${message.seq}`} count={saved.count} todoCount={saved.todo_count} todoCompleted={saved.todo_completed} cached={props.loadedSteps.get(message.seq) ?? null} load={() => props.loadSteps(message.seq)} finalText={visibleReply(message.text)} renderText={renderText} /> : renderText(visibleReply(message.text));
+                return saved ? <SavedSteps key={`${props.link.id}:${props.paneId}:${message.seq}`} count={saved.count} todoCount={saved.todo_count} todoCompleted={saved.todo_completed} cached={props.loadedSteps.get(message.seq) ?? null} load={() => props.loadSteps(message.seq)} finalText={visibleReply(message.text)} renderText={renderText} renderFinalText={generatedCandidate?.seq === message.seq ? text => renderText(text, true) : undefined} /> : renderText(visibleReply(message.text), true);
               })()}
               <PhonePictures paths={replyImages(message.text)} read={readPicture(person(message.speaker.id).display_name)} blocked={props.pictures.blocked} />
               {!foldedDecision && message.seq === decisionSeq && decisionCard}
               {showList && props.steps && message.speaker.kind === "bot" && props.steps.offer.by === message.speaker.id && newestReply.get(message.speaker.id) === message.seq &&
-                <ReplyNextSteps key={`${props.link.id}:${props.paneId}:${message.seq}:${JSON.stringify(props.steps.offer.steps)}`} offer={props.steps.offer} onStep={fillStep} />}
+                <ReplyNextSteps key={`${props.link.id}:${props.paneId}:${message.seq}:${JSON.stringify(props.steps.offer.steps)}`} limit={offer?.mode === "next_steps" ? 3 : 1} offer={props.steps.offer} onStep={fillStep} />}
             </div>
             {actionsFor(message, message.text)}
           </section>
@@ -4845,6 +4918,7 @@ function ThreadView(props: {
             {props.call?.(round.mic)}
             {round.send && <button type="submit" className="ph-send" aria-label={props.sending ? `Sending to ${props.machine}` : props.attaching ? "Attaching a file" : props.queueing && props.to ? `Queue for ${props.to}. It goes when ${props.to} finishes` : `Send to ${props.machine}`} disabled={!props.gate.enabled || props.sending || props.attaching}><ArrowUp size={21} /></button>}
         </PhoneComposerRow>
+        {props.imageNotice && <p role="status" className="ph-caption warn">{props.imageNotice}</p>}
         {paused && <p className="ph-caption warn">{props.gate.reason}</p>}
       </form>
     </>

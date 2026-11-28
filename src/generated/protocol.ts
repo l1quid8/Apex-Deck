@@ -541,7 +541,7 @@ export type MessageOrigin = {
   seq: number;
 };
 
-export type Mode = "decision_card" | "off";
+export type Mode = "decision_card" | "next_steps" | "off";
 
 /** One suggestion: a short label for the button and the prompt it sends. */
 export type NextStep = {
@@ -575,7 +575,7 @@ export type ParticipantConfig = {
   access?: Access;
   appearance?: AgentAppearance | null;
   backend: Backend;
-  /** Whether this bot's model accepts computer screenshots. Opt in explicitly. */
+  /** Legacy profile field retained for wire compatibility. Image support comes from the model. */
   can_read_images?: boolean;
   display_name: string;
   /**
@@ -618,7 +618,7 @@ export type PersonalViewContext = {
   openThreadIds?: Array<string>;
 };
 
-export type Phase = "syncing" | "ready" | "preparing" | "checks" | "submitting" | "cancelling" | "cancelled" | "failed" | "blocked" | "merged";
+export type Phase = "syncing" | "ready" | "preparing" | "checks" | "submitting" | "cancelling" | "cancelled" | "superseded" | "failed" | "blocked" | "merged";
 
 export type PlanRun = {
   by: ParticipantId;
@@ -1197,6 +1197,8 @@ export type Workflow = {
   branch: string;
   builder: string;
   builder_model: string;
+  close_pending?: boolean;
+  close_since?: number | null;
   detail: string;
   fix_requested: boolean;
   generation: number;
@@ -1206,6 +1208,7 @@ export type Workflow = {
    * the merge left as they were.
    */
   kept_edits?: number;
+  local_check_failed?: boolean;
   phase: Phase;
   pr?: number | null;
   pushed: boolean;
@@ -2289,6 +2292,7 @@ export type Command = {
     assistantId: string;
     head: string;
     pr: number;
+    repo: string;
   };
   cmd: "personal_ship";
 } | {
@@ -4215,6 +4219,7 @@ export interface Commands {
     assistantId: string;
     head: string;
     pr: number;
+    repo: string;
   };
   personal_ship_offers: {
     assistantId: string;

@@ -386,7 +386,7 @@ export function ComputerUseSettings({ backend }: { backend: Backend }) {
     </div>
 
     <div className="settings-card">
-      <div className="settings-row"><div className="settings-label"><strong>Models and screenshots</strong><small>Use your existing API, Claude Code or Codex agent in a Work thread. Enable screenshot support in an API agent’s settings only when its model accepts images.</small></div></div>
+      <div className="settings-row"><div className="settings-label"><strong>Models and screenshots</strong><small>Use your existing API, Claude Code or Codex agent in a Work thread. Deck sends approved screenshots when the API provider reports that the model accepts images.</small></div></div>
       <div className="settings-row"><div className="settings-label"><strong>Text-only models</strong><small>This model can’t read screenshots and relies on accessibility text. Some controls may be missing or interpreted incorrectly, making computer use less reliable.</small></div></div>
       <div className="settings-row"><div className="settings-label"><strong>Privacy</strong><small>Granted app content goes to the model you chose, including its cloud provider. Deck hides computer tool content from its work feed and diagnostics. Providers, CLI transcripts and an agent’s own replies may retain content. Only one agent controls the desktop at a time; using your mouse or keyboard interrupts its next action.</small></div></div>
     </div>

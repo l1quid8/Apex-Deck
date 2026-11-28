@@ -1,4 +1,5 @@
 use super::{git, repository, run, Checks, Deferral, Phase, ThreadGit, Workflow};
+use crate::pr_watch::Observation;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -22,10 +23,12 @@ struct Oid {
 enum Decision {
     Wait,
     Submit,
+    Closed,
+    HeadChanged,
     Finish(Phase, String),
 }
 fn reconcile(w: &Workflow, pr: &Pull, local_current: bool) -> Decision {
-    if pr.head_ref_oid != w.head
+    if w.pr.is_some_and(|number| number != pr.number)
         || pr.head_ref_name != w.branch
         || pr.base_ref_name != "main"
         || pr.is_cross_repository
@@ -35,7 +38,13 @@ fn reconcile(w: &Workflow, pr: &Pull, local_current: bool) -> Decision {
             "The pull request changed. Review the new commit.".into(),
         );
     }
+    if pr.state == "CLOSED" {
+        return Decision::Closed;
+    }
     if pr.state == "MERGED" {
+        if pr.merge_commit.is_none() {
+            return Decision::Wait;
+        }
         return Decision::Finish(
             Phase::Merged,
             format!(
@@ -54,12 +63,42 @@ fn reconcile(w: &Workflow, pr: &Pull, local_current: bool) -> Decision {
             "Merge cancelled. The branch stays on GitHub.".into(),
         );
     }
+    if pr.state == "OPEN" && pr.head_ref_oid != w.head {
+        return Decision::HeadChanged;
+    }
     if !local_current || pr.state != "OPEN" {
         return Decision::Finish(
             Phase::Blocked,
             "The branch or PR changed. A new merge request is needed.".into(),
         );
     }
+    if pr.merge_state_status == "DIRTY" {
+        return Decision::Finish(
+            Phase::Failed,
+            format!("PR #{} conflicts with main.", pr.number),
+        );
+    }
+    if let Some(check) = failing_checks(pr).first() {
+        return Decision::Finish(
+            Phase::Failed,
+            format!(
+                "{} reported {} on {}. {}",
+                check.name, check.result, w.head, check.url
+            ),
+        );
+    }
+    if pr.merge_state_status != "CLEAN" || !checks_passed(pr) {
+        return Decision::Wait;
+    }
+    Decision::Submit
+}
+struct FailedCheck<'a> {
+    name: &'a str,
+    result: &'a str,
+    url: &'a str,
+}
+fn failing_checks(pr: &Pull) -> Vec<FailedCheck<'_>> {
+    let mut failures = Vec::new();
     for check in &pr.status_check_rollup {
         let result = check["conclusion"]
             .as_str()
@@ -77,34 +116,36 @@ fn reconcile(w: &Workflow, pr: &Pull, local_current: bool) -> Decision {
         ]
         .contains(&result)
         {
-            let name = check["name"]
-                .as_str()
-                .or_else(|| check["context"].as_str())
-                .unwrap_or("GitHub check");
-            let url = check["detailsUrl"]
-                .as_str()
-                .or_else(|| check["targetUrl"].as_str())
-                .unwrap_or("");
-            return Decision::Finish(
-                Phase::Failed,
-                format!("{name} reported {result} on {}. {url}", w.head),
-            );
+            failures.push(FailedCheck {
+                name: check["name"]
+                    .as_str()
+                    .or_else(|| check["context"].as_str())
+                    .unwrap_or("GitHub check"),
+                result,
+                url: check["detailsUrl"]
+                    .as_str()
+                    .or_else(|| check["targetUrl"].as_str())
+                    .unwrap_or(""),
+            });
         }
     }
-    if pr.merge_state_status != "CLEAN"
-        || pr.status_check_rollup.is_empty()
-        || !pr.status_check_rollup.iter().all(|c| {
-            let success = c["conclusion"] == "SUCCESS" || c["state"] == "SUCCESS";
-            success || c["conclusion"] == "SKIPPED" || c["conclusion"] == "NEUTRAL"
-        })
-        || !pr
-            .status_check_rollup
-            .iter()
-            .any(|c| c["conclusion"] == "SUCCESS" || c["state"] == "SUCCESS")
+    // The aggregate check often fails because another check failed.
+    if failures
+        .iter()
+        .any(|check| check.name != "all-checks-passed")
     {
-        return Decision::Wait;
+        failures.retain(|check| check.name != "all-checks-passed");
     }
-    Decision::Submit
+    failures
+}
+fn checks_passed(pr: &Pull) -> bool {
+    fn succeeded(check: &serde_json::Value) -> bool {
+        check["conclusion"] == "SUCCESS" || check["state"] == "SUCCESS"
+    }
+    pr.status_check_rollup.iter().any(succeeded)
+        && pr.status_check_rollup.iter().all(|check| {
+            succeeded(check) || check["conclusion"] == "SKIPPED" || check["conclusion"] == "NEUTRAL"
+        })
 }
 enum Required {
     /// Main has no required checks, so Deck has nothing to hold a merge to.
@@ -160,6 +201,141 @@ async fn required(
     Ok(Required::Passed)
 }
 const PULL_FIELDS: &str = "number,state,headRefOid,headRefName,baseRefName,isCrossRepository,mergeCommit,mergeStateStatus,statusCheckRollup";
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ListedPull {
+    number: u64,
+    state: String,
+    head_ref_oid: String,
+    is_cross_repository: bool,
+}
+/// Find a same-repository PR even if the builder opened it outside Deck.
+pub(crate) async fn find_pr(data: &Path, w: &Workflow) -> Result<Option<u64>, String> {
+    find_pr_with(&ProjectShell, data, w).await
+}
+async fn find_pr_with(
+    shell: &impl Shell,
+    data: &Path,
+    w: &Workflow,
+) -> Result<Option<u64>, String> {
+    let gh_repo = format!("github.com/{}", w.repo);
+    let raw = shell
+        .run(
+            data,
+            Path::new(&w.root),
+            "gh",
+            &[
+                "pr",
+                "list",
+                "--repo",
+                &gh_repo,
+                "--base",
+                "main",
+                "--head",
+                &w.branch,
+                "--state",
+                "all",
+                "--json",
+                "number,state,headRefOid,isCrossRepository",
+            ],
+        )
+        .await?;
+    let pulls: Vec<ListedPull> = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+    let mut same_repo = pulls.iter().filter(|pr| !pr.is_cross_repository);
+    Ok(same_repo
+        .clone()
+        .find(|pr| pr.state == "OPEN")
+        .or_else(|| {
+            same_repo.find(|pr| {
+                matches!(pr.state.as_str(), "MERGED" | "CLOSED") && pr.head_ref_oid == w.head
+            })
+        })
+        .map(|pr| pr.number))
+}
+/// Read current GitHub state using the PR's own head, which can advance
+/// independently of the latest Deck receipt.
+pub(crate) async fn observe_pr(data: &Path, w: &Workflow) -> Result<Observation, String> {
+    observe_pr_with(&ProjectShell, data, w).await
+}
+async fn view_pull(
+    shell: &impl Shell,
+    data: &Path,
+    w: &Workflow,
+    number: u64,
+) -> Result<Pull, String> {
+    let gh_repo = format!("github.com/{}", w.repo);
+    let raw = shell
+        .run(
+            data,
+            Path::new(&w.root),
+            "gh",
+            &[
+                "pr",
+                "view",
+                &number.to_string(),
+                "--repo",
+                &gh_repo,
+                "--json",
+                PULL_FIELDS,
+            ],
+        )
+        .await?;
+    serde_json::from_str(&raw).map_err(|e| e.to_string())
+}
+async fn observe_pr_with(
+    shell: &impl Shell,
+    data: &Path,
+    w: &Workflow,
+) -> Result<Observation, String> {
+    let number = w.pr.ok_or("No pull request to observe.")?;
+    let pr = view_pull(shell, data, w, number).await?;
+    if pr.number != number
+        || pr.head_ref_name != w.branch
+        || pr.base_ref_name != "main"
+        || pr.is_cross_repository
+    {
+        return Err("GitHub returned a pull request for a different branch or repository.".into());
+    }
+    match pr.state.as_str() {
+        "MERGED" => {
+            let oid = pr
+                .merge_commit
+                .ok_or("GitHub did not report the merge commit.")?
+                .oid;
+            return Ok(Observation::Merged {
+                oid,
+                head: pr.head_ref_oid,
+            });
+        }
+        "CLOSED" => return Ok(Observation::Closed),
+        "OPEN" => {}
+        state => return Err(format!("Unknown GitHub pull request state: {state}")),
+    }
+    if pr.merge_state_status == "DIRTY" {
+        return Ok(Observation::Conflict {
+            head: pr.head_ref_oid,
+        });
+    }
+    let failures = failing_checks(&pr);
+    if !failures.is_empty() {
+        let url = failures
+            .iter()
+            .find(|check| !check.url.is_empty())
+            .map(|check| check.url.to_owned())
+            .unwrap_or_else(|| format!("https://github.com/{}/pull/{number}/checks", w.repo));
+        let names = failures.iter().map(|check| check.name.to_owned()).collect();
+        return Ok(Observation::Failed {
+            head: pr.head_ref_oid,
+            names,
+            url,
+        });
+    }
+    Ok(if checks_passed(&pr) {
+        Observation::Passed
+    } else {
+        Observation::Running
+    })
+}
 /// Read-only: what GitHub says about the reviewed commit's pull request. It
 /// pushes nothing, opens nothing and changes no saved state.
 pub(super) async fn probe(shell: &impl Shell, w: &Workflow, data: &Path) -> Result<Checks, String> {
@@ -180,16 +356,16 @@ pub(super) async fn probe(shell: &impl Shell, w: &Workflow, data: &Path) -> Resu
     let Ok(number) = list.trim().parse::<u64>() else {
         return Ok(Checks::Unknown("This branch has no open pull request.".into()));
     };
-    let raw = shell
-        .run(data, root, "gh", &["pr", "view", &number.to_string(), "--repo", &gh_repo, "--json", PULL_FIELDS])
-        .await?;
-    let pr: Pull = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+    let pr = view_pull(shell, data, w, number).await?;
     // The same reading the merge worker uses, as if the merge had been asked for.
     let mut asked = w.clone();
     asked.phase = Phase::Checks;
+    asked.pr = Some(number);
     Ok(match reconcile(&asked, &pr, true) {
         Decision::Finish(Phase::Failed, detail) => Checks::Failed { pr: number, detail },
         Decision::Finish(_, detail) => Checks::Unknown(detail),
+        Decision::HeadChanged => Checks::Unknown("The pull request changed. Review the new commit.".into()),
+        Decision::Closed => Checks::Unknown("The pull request was closed.".into()),
         Decision::Wait => Checks::Running,
         Decision::Submit => match required(shell, w, &pr, data, root).await? {
             Required::Passed => Checks::Passed { pr: number },
@@ -422,6 +598,7 @@ impl ThreadGit {
                 {
                     self.update(room, w, |j| {
                         j.phase = Phase::Failed;
+                        j.local_check_failed = true;
                         j.detail = why.chars().take(6000).collect();
                     })?;
                     return Ok(None);
@@ -520,9 +697,8 @@ impl ThreadGit {
             })?;
             return Ok(None);
         }
-        let number = w.pr.unwrap().to_string();
-        let raw=shell.run(data,root,"gh",&["pr","view",&number,"--repo",&gh_repo,"--json",PULL_FIELDS]).await?;
-        let pr: Pull = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+        let number = w.pr.unwrap();
+        let pr = view_pull(shell, data, w, number).await?;
         match reconcile(w, &pr, local) {
             // GitHub works mergeability out lazily; UNKNOWN is not an answer yet.
             Decision::Wait if w.ready_only && pr.merge_state_status != "UNKNOWN" => {
@@ -532,26 +708,29 @@ impl ThreadGit {
                 })?;
             }
             Decision::Wait => {}
+            Decision::Closed => { self.mark_closed(room, w)?; }
+            Decision::HeadChanged => {
+                let detail = "The pull request changed. A new receipt is needed to merge it.";
+                let moved = self.update(room, w, |job| {
+                    job.phase = Phase::Superseded;
+                    job.detail = detail.into();
+                })?;
+                return Ok(moved.then(|| detail.into()));
+            }
             Decision::Finish(Phase::Blocked, detail) => return block(w, detail),
             Decision::Finish(phase, mut detail) => {
-                if phase == Phase::Failed {
+                if phase == Phase::Failed && pr.merge_state_status != "DIRTY" {
                     // Fetch only the failing Actions run for this PR's commit.
-                    if let Some(run_id) = pr
-                        .status_check_rollup
-                        .iter()
-                        .filter(|c| c["conclusion"] == "FAILURE")
-                        .filter_map(|c| c["detailsUrl"].as_str())
-                        .find_map(|url| {
-                            url.strip_prefix(&format!(
-                                "https://github.com/{}/actions/runs/",
-                                w.repo
-                            ))?
+                    let run_prefix = format!("https://{gh_repo}/actions/runs/");
+                    if let Some(run_id) = failing_checks(&pr).iter().find_map(|check| {
+                        check
+                            .url
+                            .strip_prefix(&run_prefix)?
                             .split('/')
                             .next()?
                             .parse::<u64>()
                             .ok()
-                        })
-                    {
+                    }) {
                         if let Ok(log) = shell
                             .run(
                                 data,
@@ -586,6 +765,7 @@ impl ThreadGit {
                 self.update(room, w, |j| {
                     j.phase = phase;
                     if j.phase == Phase::Merged {
+                        j.head.clone_from(&pr.head_ref_oid);
                         j.result_oid = pr.merge_commit.as_ref().map(|c| c.oid.clone());
                         if j.result_oid.is_some() {
                             j.phase = Phase::Syncing;
@@ -672,6 +852,8 @@ impl ThreadGit {
     }
 }
 
+#[cfg(test)]
+mod tests;
 pub(crate) mod preflight;
 /// Everything that stands between this commit's pull request and main, with
 /// a failure to ask read as unknown.

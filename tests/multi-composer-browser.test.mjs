@@ -5,9 +5,9 @@ const fixture = `import React,{useState} from 'react';import{createRoot}from'rea
 import{MultiComposer}from'/src/MultiComposer.tsx';import{useMultiDraft}from'/src/useMultiDraft.ts';import{useMultiBatches}from'/src/useMultiBatches.ts';import'/src/styles.css';
 const calls=[];window.calls=calls;const apis={get(id){return{paneId:id,hostId:'local',queue:id,canPickAgent:true,submit(p){calls.push([id,'submit',p]);return{queue:id,id:1}},command(c){calls.push([id,'command',c]);return{queue:id,id:1}},watch(ref,fn){fn('waiting');return()=>{}},status(){return'waiting'}}},subscribe(){return()=>{}}};
 const agents=[{id:'null',handle:'null',name:'Null'},{id:'muck',handle:'muck',name:'Muck'}];
-const threads=new Map(['A','B','C','D','E'].map(id=>[id,{paneId:id,hostId:'local',title:'Thread '+id,project:'Project',open:true,agents,defaultAgentIds:['null']} ]));
+const threads=new Map(['A','B','C','D','E'].map(id=>[id,{paneId:id,hostId:'local',title:'Thread '+id,project:'Project',open:true,previewImages:async routing=>({blocked:routing.includes('blocked'),text:routing.includes('blocked')?'Cannot receive images':'Unconfirmed support'}),agents,defaultAgentIds:['null']} ]));
 const tag=paneId=>({kind:'thread',paneId,hostId:'local'});const text=text=>({kind:'text',text});
-function Fixture(){const draft=useMultiDraft();const batches=useMultiBatches(apis);const[flashed,flash]=useState([]);const[routeRequest,setRouteRequest]=useState();window.fixture={draft,batches,threads,header(paneId){setRouteRequest({paneId,anchor:new DOMRect(20,30,80,15),seq:Date.now()})},init(){draft.setDoc([[tag('A'),text(' what is the status')],[tag('B'),text(' @Muck run the dev server')],[tag('C'),text(' create a plan')],[tag('D'),text(' /compact')]]);draft.open()},empty(){draft.setDoc([[tag('A'),text(' hello')],[tag('B')]])},duplicate(){draft.setDoc([[tag('A'),tag('A'),text(' hi')]])}};return <div className='rail'><div>{flashed.join(',')}</div>{draft.on?<MultiComposer routeRequest={routeRequest} draft={draft} batches={batches} apis={apis} threads={threads} files={new Map()} onAttachFiles={()=>{}} onReveal={()=>{}} onFlash={flash}/>:<div>Single composer</div>}</div>};createRoot(document.getElementById('root')).render(<Fixture/>);`;
+function Fixture(){const draft=useMultiDraft();const batches=useMultiBatches(apis);const[flashed,flash]=useState([]);const[routeRequest,setRouteRequest]=useState();window.fixture={draft,batches,threads,header(paneId){setRouteRequest({paneId,anchor:new DOMRect(20,30,80,15),seq:Date.now()})},init(){draft.setDoc([[tag('A'),text(' what is the status')],[tag('B'),text(' @Muck run the dev server')],[tag('C'),text(' create a plan')],[tag('D'),text(' /compact')]]);draft.open()},empty(){draft.setDoc([[tag('A'),text(' hello')],[tag('B')]])},duplicate(){draft.setDoc([[tag('A'),tag('A'),text(' hi')]])}};return <div className='rail'><div>{flashed.join(',')}</div>{draft.on?<MultiComposer routeRequest={routeRequest} draft={draft} batches={batches} apis={apis} threads={threads} files={new Map([['photo',{id:'photo',label:'Picture',name:'image.png',bytes:new Uint8Array([1]),previewUrl:null}]])} onAttachFiles={()=>{}} onReveal={()=>{}} onFlash={flash}/>:<div>Single composer</div>}</div>};createRoot(document.getElementById('root')).render(<Fixture/>);`;
 const plugin={name:'multi-composer-fixture',enforce:'pre',transform(code,id){if(id.endsWith('/src/main.tsx'))return fixture;}};
 
 test('multi composer previews routing, blocks the entire empty/duplicate batch and claims sends synchronously', {timeout:120000}, async()=>{
@@ -43,6 +43,14 @@ test('multi composer pickers use live caret, protect newer text, and show actual
     const set=async(doc)=>{await run('window.fixture.draft.setDoc('+JSON.stringify(doc)+')');await frame();};
     const tag={kind:'thread',paneId:'A',hostId:'local'};
     const atEnd=async()=>{await run('(()=>{const e=document.querySelector(".rich-draft-editor"),r=document.createRange();e.focus();r.selectNodeContents(e.lastChild);r.collapse(false);const s=getSelection();s.removeAllRanges();s.addRange(r);e.dispatchEvent(new MouseEvent("mouseup",{bubbles:true}));})()');await frame();};
+    await set([[tag,{kind:'text',text:' blocked'},{kind:'file',fileId:'photo'}]]);
+    await until('document.querySelector(".multi-composer [role=status]")?.textContent.includes("Cannot receive images")');
+    assert.equal(await run('document.querySelector(".composer-send").disabled'),true);
+    await set([[tag,{kind:'file',fileId:'photo'}]]);
+    await until('document.querySelector(".multi-composer [role=status]")?.textContent.includes("Unconfirmed support")');
+    await run('document.querySelector(".composer-send").click()');await frame();
+    assert.equal(await run('window.calls.at(-1)[2].imageWarning'),'Unconfirmed support');
+    await run('window.fixture.init()');await frame();
     await set([[tag,{kind:'text',text:' hello #E'}]]);await atEnd();
     assert.equal(await run('document.querySelector("[role=listbox]").getAttribute("aria-label")'),'Threads');
     await run('[...document.querySelectorAll("[role=option]")].find(b=>b.textContent.startsWith("Thread E")).click()');await frame();

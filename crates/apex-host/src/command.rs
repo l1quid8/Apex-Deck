@@ -195,7 +195,7 @@ pub enum Command {
     PersonalAdminExecute { assistant_id: String, #[serde(default)] event_id: Option<String>, #[serde(flatten)] call: crate::personal_admin::AdminToolCall },
     PersonalAdminUndo { assistant_id: String, receipt_id: String },
     /// The Ship it tap on such a card, for the commit it showed.
-    PersonalShip { assistant_id: String, pr: u64, head: String },
+    PersonalShip { assistant_id: String, pr: u64, repo: String, head: String },
     RoomThreadGitAction { id: String, action: crate::thread_git::ThreadGitAction },
     RoomGitAction { id: String, action: crate::git_changes::Action },
     RoomFork { source: String, target: String, upto: Option<usize> },
@@ -973,7 +973,7 @@ impl Host {
             PersonalAdminExecute { assistant_id, event_id, call } => reply(self.personal_admin_execute(&assistant_id, event_id, call).await?),
             PersonalAdminUndo { assistant_id, receipt_id } => reply(self.personal_admin_undo(&assistant_id, &receipt_id).await?),
             PersonalShipOffers { assistant_id } => reply(self.personal_ship_offers(assistant_id).await?),
-            PersonalShip { assistant_id, pr, head } => reply(self.personal_ship(assistant_id, pr, head).await?),
+            PersonalShip { assistant_id, pr, repo, head } => reply(self.personal_ship(assistant_id, pr, repo, head).await?),
             RoomThreadGitAction { id, action } => reply(self.room_thread_git_action(id, action).await?),
             RoomGitAction { id, action } => reply(self.room_git_action(id, action).await?),
             RoomFork { source, target, upto } => reply(self.room_fork(source, target, upto)?),

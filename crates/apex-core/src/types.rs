@@ -131,7 +131,7 @@ pub struct ParticipantConfig {
     pub persona: String,
     #[serde(default)]
     pub access: Access,
-    /// Whether this bot's model accepts computer screenshots. Opt in explicitly.
+    /// Legacy profile field retained for wire compatibility. Image support comes from the model.
     #[serde(default)]
     pub can_read_images: bool,
     /// How hard the model should think, in the backend's own words (for

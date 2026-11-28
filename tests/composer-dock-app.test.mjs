@@ -91,6 +91,13 @@ for (const [width,height] of [[1512,945],[1100,650]]) test(`App dock: drops, ste
  // Send through the real composer on the demo backend; its started-thread UI
  // must already be present before recording the empty-composer geometry.
  await size(${width},${height});await clear();await type('start');
+ // The sample agents are text-only. Remove the dropped PNGs before sending.
+ await until('document.querySelector(".composer [role=status]")?.textContent.includes("can’t receive images")');
+ assert.equal(await run('document.querySelector(".composer [aria-label=Send]").disabled'),true);
+ await run('document.querySelectorAll(".composer .attachment button").forEach(button=>button.click())');
+ await until('!document.querySelector(".composer .attachment") && !document.querySelector(".composer [aria-label=Send]").disabled');
+ assert.equal(await run('document.querySelector(".composer textarea").value'),'start');
+ await run('document.querySelector(".composer textarea").focus()');
  const enter=async()=>{win.webContents.sendInputEvent({type:'keyDown',keyCode:'Enter'});win.webContents.sendInputEvent({type:'keyUp',keyCode:'Enter'});await until('document.querySelector(".composer textarea").value===""');await sleep(200);};
  await enter();
  const rects=()=>run('[...document.querySelectorAll(".pane-map-slot")].map(s=>{const r=s.getBoundingClientRect();return [r.x,r.y,r.width,r.height]})');

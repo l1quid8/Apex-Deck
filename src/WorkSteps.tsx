@@ -162,6 +162,7 @@ interface SavedProps {
   /** Fetch the reply's saved steps; null or a rejection means they can't be shown. */
   load: () => Promise<ReplySteps | null>;
   renderText?: (text: string) => ReactNode;
+  renderFinalText?: (text: string) => ReactNode;
   /** Final message text, shown immediately and deduplicated from a loaded ordered timeline. */
   finalText?: string;
   todoCount?: number;
@@ -171,7 +172,7 @@ interface SavedProps {
 type Saved = { open: boolean; status: "idle" | "loading" | "ready" | "failed"; reply: ReplySteps | null };
 
 /** The quiet "83 steps" line under a finished reply; opens that reply's saved steps. */
-export function SavedSteps({ count, cached, load, renderText, finalText, todoCount, todoCompleted }: SavedProps) {
+export function SavedSteps({ count, cached, load, renderText, renderFinalText, finalText, todoCount, todoCompleted }: SavedProps) {
   const [saved, setSaved] = useState<Saved>(() => ({ open: false, status: cached ? "ready" : "idle", reply: cached ?? null }));
   const click = () => {
     if (saved.open) { setSaved((s) => ({ ...s, open: false })); return; }
@@ -195,13 +196,14 @@ export function SavedSteps({ count, cached, load, renderText, finalText, todoCou
         if (!skipped && entry.kind === "text" && entry.text === finalText) { skipped = true; return false; }
         return true;
       });
-    } else if (timelineText === finalText && textEntries.length) {
+    } else if (timelineText === finalText && textEntries.length && !renderFinalText) {
       let lastTextIndex = -1;
       timelineForDisplay.forEach((entry, index) => { if (entry.kind === "text") lastTextIndex = index; });
       displayFinal = textEntries[textEntries.length - 1].text;
       timelineForDisplay = timelineForDisplay.filter((_, index) => index !== lastTextIndex);
     } else {
-      // A damaged/mismatched snapshot cannot be safely reconciled with the final answer.
+      // Keep rich final replies intact when timeline chunks split a card.
+      // Also keep the complete final answer for mismatched timeline snapshots.
       timelineForDisplay = timelineForDisplay.filter((entry) => entry.kind !== "text");
     }
   }
@@ -210,7 +212,7 @@ export function SavedSteps({ count, cached, load, renderText, finalText, todoCou
     : stepsCountLabel(count);
   return (
     <div className="work-steps-saved">
-      {finalText !== undefined && <div className="work-steps-saved-final">{renderText ? renderText(displayFinal ?? finalText) : displayFinal}</div>}
+      {finalText !== undefined && <div className="work-steps-saved-final">{(renderFinalText ?? renderText)?.(displayFinal ?? finalText) ?? displayFinal}</div>}
       <button type="button" className="work-steps-toggle" aria-expanded={saved.open} onClick={click}>{label}</button>
       {saved.open && saved.status === "loading" && <p className="work-steps-note">Loading steps…</p>}
       {saved.open && saved.status === "failed" && <p className="work-steps-note">Steps aren't available for this reply.</p>}
