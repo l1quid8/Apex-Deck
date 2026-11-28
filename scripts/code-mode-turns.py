@@ -39,11 +39,11 @@ def fixture(seed, task):
         if include:
             rows.extend(row for row in data if task != "conditional" or row["band"] == "amber")
     files["dispatch.txt"] = "\n".join(f"station-{i:02}.log" for i in selected) + "\n"
-    scope = {"lookup": "Use just station-07.log.",
+    scope = {"lookup": "Select every SCAN in station-07.log only.",
              "conditional": "Use all 32 station logs, selecting only scans whose band equals amber.",
-             "indexed": "Use just the station logs named in dispatch.txt."}[task]
+             "indexed": "Select every SCAN in the station logs named in dispatch.txt."}[task]
     prompt = (scope + " Each SCAN line contains a JSON object after the prefix. "
-              "Return a JSON object with integer count (selected scans) and total (sum of their delay).")
+              "Return only a JSON object with integer count (selected scans) and total (sum of their delay).")
     return files, prompt, {"count": len(rows), "total": sum(r["delay"] for r in rows)}
 
 
@@ -81,6 +81,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for arg in ["driver", "family", "model", "out"]:
         parser.add_argument("--" + arg, required=True)
+    parser.add_argument("--seed", type=int, default=130001)
     args = parser.parse_args()
     if args.family not in ("claude_code", "codex"):
         parser.error("this comparison needs an adapter with the Code Mode bridge")
@@ -88,7 +89,7 @@ def main():
     with open(args.out, "x", buffering=1) as log:
         for repeat in range(6):
             for index, task in enumerate(TASKS):
-                files, prompt, truth = fixture(90317 + 3 * repeat + index, task)
+                files, prompt, truth = fixture(args.seed + 3 * repeat + index, task)
                 digest = hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
                 for arm in orders[(repeat + index) % len(orders)]:
                     try:

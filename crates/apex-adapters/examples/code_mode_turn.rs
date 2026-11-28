@@ -11,13 +11,19 @@ use std::{
     time::{Duration, Instant},
 };
 
-struct BatchReads;
+#[derive(Default)]
+struct BatchReads {
+    denied: Mutex<Vec<String>>,
+}
 #[async_trait::async_trait]
 impl Approver for BatchReads {
     async fn decide(&self, action: ProposedAction) -> Decision {
         let args: Value = serde_json::from_str(&action.detail).unwrap_or_default();
         if action.kind == ActionKind::Tool
-            && action.title == "apex-code-mode: deck_code_mode"
+            && matches!(
+                action.title.as_str(),
+                "apex-code-mode: deck_code_mode" | "apex_code_mode: deck_code_mode"
+            )
             && args["stages"].as_array().is_some_and(|stages| {
                 stages.iter().all(|stage| {
                     stage.as_array().is_some_and(|calls| {
@@ -33,6 +39,7 @@ impl Approver for BatchReads {
         {
             Decision::Approve
         } else {
+            self.denied.lock().unwrap().push(action.title);
             Decision::Reject
         }
     }
@@ -98,7 +105,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }));
         }
     };
-    let response = bot.respond_with_approvals(request, &record, &BatchReads);
+    let approvals = BatchReads::default();
+    let response = bot.respond_with_approvals(request, &record, &approvals);
     let outcome = tokio::time::timeout(Duration::from_secs(180), response).await;
     let result = match outcome {
         Ok(Ok(r)) => {
@@ -112,7 +120,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     println!(
         "{}",
-        json!({"result":result,"seconds":started.elapsed().as_secs_f64(),"steps":steps.into_inner().unwrap()})
+        json!({"result":result,"denied_actions":approvals.denied.into_inner().unwrap(),"seconds":started.elapsed().as_secs_f64(),"steps":steps.into_inner().unwrap()})
     );
     Ok(())
 }
