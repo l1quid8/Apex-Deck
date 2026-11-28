@@ -117,6 +117,7 @@ final class AppLock {
 
     func lock() {
         locked = true
+        NotificationCenter.default.post(name: Notification.Name("ApexGeneratedCardsLocked"), object: nil)
         promptDue = true
         showCover()
         changed?()
@@ -125,6 +126,7 @@ final class AppLock {
 
     func unlock() {
         locked = false
+        NotificationCenter.default.post(name: Notification.Name("ApexGeneratedCardsUnlocked"), object: nil)
         unlockedAt = Date()
         hideCover()
         changed?()

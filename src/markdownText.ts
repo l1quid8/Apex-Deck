@@ -45,7 +45,7 @@ function cells(line: string): string[] {
 }
 
 /** Split a reply into blocks. */
-export function parseBlocks(source: string): Block[] {
+export function parseBlocks(source: string, { closedFencesOnly = false } = {}): Block[] {
   const lines = source.replace(/\r\n?/g, "\n").split("\n");
   const blocks: Block[] = [];
   let paragraph: string[] = [];
@@ -71,6 +71,7 @@ export function parseBlocks(source: string): Block[] {
         body.push(lines[i]);
         i++;
       }
+      if (closedFencesOnly && i === lines.length) break;
       i++;
       blocks.push({ kind: "code", language: fence[2], text: body.join("\n") });
       continue;
