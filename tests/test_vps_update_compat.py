@@ -34,12 +34,15 @@ class SourceCompatibilityTests(unittest.TestCase):
     def stage(self, commit=RELEASE):
         self.command.write_text(historical_source(commit))
 
-    def test_native_release_preserves_current_admission(self):
+    def stage_native(self):
         shutil.copyfile(ROOT / COMMAND, self.command)
         for name in ("apex-daemon", "apex-host"):
             module = Path("crates") / name / "src/maintenance.rs"
             (self.source / module).parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / module, self.source / module)
+
+    def test_native_release_preserves_current_admission(self):
+        self.stage_native()
         before = self.command.read_bytes()
         self.assertTrue(self.compat.prepare_source(self.source)["native_maintenance"])
         self.assertTrue(self.compat.prepare_source(self.source, native_only=True)["native_maintenance"])
@@ -50,6 +53,49 @@ class SourceCompatibilityTests(unittest.TestCase):
         with self.assertRaises(self.compat.CompatibilityError):
             self.compat.prepare_source(self.source)
         self.assertEqual(self.command.read_bytes(), modified)
+
+    def test_native_retired_full_access_route_remains_read_only(self):
+        self.stage_native()
+        current = self.command.read_text()
+        previous = current.replace(
+            "Command::PersonalBrowserSession {}",
+            "Command::PersonalBrowserSession {} | Command::AgentFullAccess { .. }", 1
+        )
+        self.assertNotEqual(previous, current)
+        self.command.write_text(previous)
+        self.assertTrue(self.compat.prepare_source(self.source)["native_maintenance"])
+        self.assertEqual(self.command.read_text(), previous)
+
+    def test_native_full_access_exception_does_not_accept_broader_or_unchecked_routes(self):
+        self.stage_native()
+        current = self.command.read_text()
+        mutations = {
+            "broader paired bypass": (
+                "if matches!(command, Command::PersonalBrowserSession {}) {",
+                "if matches!(command, Command::PersonalBrowserSession {} | Command::SettingsSave { .. }) {",
+            ),
+            "missing confined authorization": (
+                "        check()?;\n        match command {",
+                "        match command {",
+            ),
+            "missing raw receipt gate": (
+                "command if needs_receipt(&command)? => return Err(",
+                "command if false => return Err(",
+            ),
+            "missing terminal surface check": (
+                'if !cfg!(target_os = "linux") || !local_linux_cli_surface(&command) {',
+                'if !cfg!(target_os = "linux") {',
+            ),
+        }
+        for name, (before, after) in mutations.items():
+            with self.subTest(mutation=name):
+                self.assertEqual(current.count(before), 1, "mutation must target one reviewed routing gate")
+                modified = current.replace(before, after, 1)
+                self.command.write_text(modified)
+                for native_only in (False, True):
+                    with self.assertRaisesRegex(self.compat.CompatibilityError, "Unsupported native Linux admission routing"):
+                        self.compat.prepare_source(self.source, native_only=native_only)
+                    self.assertEqual(self.command.read_text(), modified)
 
     def test_nightly_cannot_carry_the_historical_stable_patch(self):
         self.stage()

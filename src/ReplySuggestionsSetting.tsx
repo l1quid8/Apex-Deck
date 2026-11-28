@@ -2,7 +2,15 @@ import { useEffect, useState } from "react";
 import type { Backend } from "./backend";
 import { suggestionsMode, type SuggestionsMode } from "./replyDecision";
 
-export function ReplySuggestionsSetting({ backend }: { backend: Backend }) {
+import "./reply-suggestions-setting.css";
+
+const descriptions: Record<SuggestionsMode, string> = {
+  off: "Hide suggested replies.",
+  decision_card: "Offer one suggested reply to edit before sending.",
+  next_steps: "Show up to three choices beneath the latest agent reply.",
+};
+
+export function ReplySuggestionsSetting({ backend, hostName }: { backend: Backend; hostName?: string }) {
   const [mode, setMode] = useState<SuggestionsMode | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -27,8 +35,19 @@ export function ReplySuggestionsSetting({ backend }: { backend: Backend }) {
     } catch (e) { setError(String(e)); }
     finally { setSaving(false); }
   }
-  return <div><select aria-label="Suggestions after a reply" disabled={saving || mode === null} value={mode ?? ""} onChange={e => void save(e.target.value as SuggestionsMode)}>
-    {mode === null && <option value="">Loading…</option>}
-    <option value="decision_card">On</option><option value="off">Off</option>
-  </select>{error && <span role="alert">{error} <button onClick={() => { setError(""); setRevision(n => n + 1); }}>Refresh</button></span>}</div>;
+  return <>
+    <div className="settings-label ph-grow"><strong>Suggestions after a reply</strong>
+      <small>{hostName && `${hostName} · `}{mode && descriptions[mode]}</small>
+    </div>
+    <div className="suggestion-controls">
+      {mode && <span className="usage-credit-chip">{mode === "off" ? "No usage credits" : "Usage credits"}</span>}
+      <select aria-label="Suggestions after a reply" disabled={saving || mode === null} value={mode ?? ""} onChange={e => void save(e.target.value as SuggestionsMode)}>
+        {mode === null && <option value="">Loading…</option>}
+        <option value="off">Off</option>
+        <option value="decision_card">One suggestion</option>
+        <option value="next_steps">Up to three next steps</option>
+      </select>
+    </div>
+    {error && <span role="alert">{error} <button onClick={() => { setError(""); setRevision(n => n + 1); }}>Refresh</button></span>}
+  </>;
 }

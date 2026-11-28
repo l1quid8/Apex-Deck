@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { Offer } from './questions';
 import type { NextStep } from './types';
@@ -12,7 +12,7 @@ const HOLD_MS = 450;
 interface Preview { text: string; left: number; top: number; bottom: number }
 
 /** Follow-ups belong to the offering agent's latest finished response. */
-export function ReplyNextSteps({ offer, onStep }: { offer: Offer; onStep(step: NextStep, by: string): void }) {
+export function ReplyNextSteps({ offer, onStep, limit = 3 }: { offer: Offer; limit?: 1 | 3; onStep(step: NextStep, by: string): void }) {
   const [preview, setPreview] = useState<Preview | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   // A touch screen has no hover: a hold shows the prompt, and the tap that
@@ -37,8 +37,7 @@ export function ReplyNextSteps({ offer, onStep }: { offer: Offer; onStep(step: N
       window.removeEventListener('keydown', key, true);
     };
   }, [preview]);
-  const [step] = offer.steps;
-  if (offer.pending || !step) return null;
+  if (offer.pending || !offer.steps.length) return null;
 
   const hide = () => { clearTimeout(timer.current); setPreview(null); };
   const show = (step: NextStep, el: HTMLElement, delay: number) => {
@@ -55,30 +54,33 @@ export function ReplyNextSteps({ offer, onStep }: { offer: Offer; onStep(step: N
     <div className="reply-next-steps-links" role="group" aria-label="Suggested reply">
       {/* A span, not a button: Chromium lays an inline button out as one
           atomic box, so its label could never continue across a line. */}
-      <span className="reply-next-step" role="button" tabIndex={0} aria-describedby={id}
-        onPointerEnter={event => { if (event.pointerType === 'mouse') show(step, event.currentTarget, PREVIEW_MS); }}
-        onPointerDown={event => {
-          held.current = false;
-          if (event.pointerType === 'mouse') return;
-          const el = event.currentTarget;
-          hide();
-          timer.current = setTimeout(() => { held.current = true; show(step, el, 0); }, HOLD_MS);
-        }}
-        onPointerUp={event => { if (event.pointerType !== 'mouse') hide(); }}
-        onPointerCancel={() => { held.current = false; hide(); }}
-        onContextMenu={event => { if (held.current) event.preventDefault(); }}
-        onClick={() => {
-          if (held.current) { held.current = false; return; }
-          onStep(step, offer.by);
-        }}
-        onKeyDown={event => {
-          if (event.key !== 'Enter' && event.key !== ' ') return;
-          event.preventDefault();
-          onStep(step, offer.by);
-        }}
-        onFocus={event => show(step, event.currentTarget, 0)}
-        onBlur={hide}>{step.label}</span>
-      <span id={id} className="reply-next-steps-sr">{step.prompt}</span>
+      {offer.steps.slice(0, limit).map((step, index) => <Fragment key={index}>
+        {index > 0 && <span className="reply-next-separator" aria-hidden="true"> · </span>}
+        <span className="reply-next-step" role="button" tabIndex={0} aria-describedby={`${id}-${index}`}
+          onPointerEnter={event => { if (event.pointerType === 'mouse') show(step, event.currentTarget, PREVIEW_MS); }}
+          onPointerDown={event => {
+            held.current = false;
+            if (event.pointerType === 'mouse') return;
+            const el = event.currentTarget;
+            hide();
+            timer.current = setTimeout(() => { held.current = true; show(step, el, 0); }, HOLD_MS);
+          }}
+          onPointerUp={event => { if (event.pointerType !== 'mouse') hide(); }}
+          onPointerCancel={() => { held.current = false; hide(); }}
+          onContextMenu={event => { if (held.current) event.preventDefault(); }}
+          onClick={() => {
+            if (held.current) { held.current = false; return; }
+            onStep(step, offer.by);
+          }}
+          onKeyDown={event => {
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+            event.preventDefault();
+            onStep(step, offer.by);
+          }}
+          onFocus={event => show(step, event.currentTarget, 0)}
+          onBlur={hide}>{step.label}</span>
+        <span id={`${id}-${index}`} className="reply-next-steps-sr">{step.prompt}</span>
+      </Fragment>)}
     </div>
     {preview && <SuggestionPreview {...preview} />}
   </div>;

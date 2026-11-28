@@ -12,6 +12,7 @@ pub mod agents;
 pub mod changes;
 pub mod git_changes;
 pub mod thread_git;
+pub mod pr_watch;
 pub mod task_branches;
 mod plain_file;
 pub mod search;

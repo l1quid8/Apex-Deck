@@ -525,7 +525,7 @@ export type MessageOrigin = {
   seq: number;
 };
 
-export type Mode = "decision_card" | "off";
+export type Mode = "decision_card" | "next_steps" | "off";
 
 /** One suggestion: a short label for the button and the prompt it sends. */
 export type NextStep = {
@@ -602,7 +602,7 @@ export type PersonalViewContext = {
   openThreadIds?: Array<string>;
 };
 
-export type Phase = "syncing" | "ready" | "preparing" | "checks" | "submitting" | "cancelling" | "cancelled" | "failed" | "blocked" | "merged";
+export type Phase = "syncing" | "ready" | "preparing" | "checks" | "submitting" | "cancelling" | "cancelled" | "superseded" | "failed" | "blocked" | "merged";
 
 export type PlanRun = {
   by: ParticipantId;
@@ -1096,10 +1096,13 @@ export type Workflow = {
   branch: string;
   builder: string;
   builder_model: string;
+  close_pending?: boolean;
+  close_since?: number | null;
   detail: string;
   fix_requested: boolean;
   generation: number;
   head: string;
+  local_check_failed?: boolean;
   phase: Phase;
   pr?: number | null;
   pushed: boolean;

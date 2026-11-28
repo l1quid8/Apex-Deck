@@ -27,6 +27,7 @@ const KEPT: usize = 64;
 #[serde(rename_all = "snake_case")]
 pub enum Mode {
     DecisionCard,
+    NextSteps,
     Off,
 }
 impl Mode {
@@ -40,12 +41,14 @@ impl Mode {
     pub fn as_str(self) -> &'static str {
         match self {
             Mode::DecisionCard => "decision_card",
+            Mode::NextSteps => "next_steps",
             Mode::Off => "off",
         }
     }
     fn code(self) -> u8 {
         match self {
             Mode::DecisionCard => 0,
+            Mode::NextSteps => 1,
             Mode::Off => 2,
         }
     }
@@ -109,6 +112,7 @@ pub struct Facts<'a> {
     pub room: &'a str,
     /// An agent is working, so there is no finished reply to sit under.
     pub busy: bool,
+    pub watched: bool,
     pub reply: Option<Reply<'a>>,
     pub workflow: Option<&'a Workflow>,
     /// The commit checked out in the thread's folder right now.
@@ -155,12 +159,12 @@ pub fn decide(facts: &Facts<'_>, dismissed: impl Fn(&str) -> bool) -> Option<Dec
         return Some(git(w, Kind::Merging, "merging", question, None, 0, None));
     }
     let reply = facts.reply.as_ref()?;
-    if facts.mode != Mode::DecisionCard || facts.busy {
+    if facts.mode == Mode::Off || facts.busy {
         return None;
     }
     let current = facts.workflow.filter(|w| facts.head == Some(w.head.as_str()));
     let candidate = current.and_then(|w| match (&w.phase, facts.checks) {
-        (Phase::Failed, _) if !w.fix_requested => Some(git(
+        (Phase::Failed, _) if !w.fix_requested && !facts.watched => Some(git(
             w,
             Kind::FixFailed,
             "fix",
@@ -179,7 +183,7 @@ pub fn decide(facts: &Facts<'_>, dismissed: impl Fn(&str) -> bool) -> Option<Dec
             card.pr = Some(*pr);
             Some(card)
         }
-        (Phase::Ready | Phase::Cancelled, Checks::Failed { pr, detail }) if !w.fix_requested => {
+        (Phase::Ready | Phase::Cancelled, Checks::Failed { pr, detail }) if !w.fix_requested && !facts.watched => {
             let mut card = git(
                 w,
                 Kind::FixChecks,
@@ -280,6 +284,7 @@ impl ReplySuggestions {
     }
     pub fn mode(&self) -> Mode {
         match self.mode.load(Ordering::SeqCst) {
+            1 => Mode::NextSteps,
             2 => Mode::Off,
             _ => Mode::DecisionCard,
         }
@@ -358,7 +363,7 @@ impl crate::Host {
         let request_id = format!("reply-choice-{:x}", Sha256::digest(key.as_bytes()));
         let check = || {
             let latest = handle.checkpoint.lock().unwrap().snapshot.transcript.last().map(|m| m.seq as u64);
-            if latest != seq || self.reply_suggestions.mode() != crate::reply_suggestions::Mode::DecisionCard ||
+            if latest != seq || self.reply_suggestions.mode() == crate::reply_suggestions::Mode::Off ||
                 self.reply_suggestions.dismissed(&id)?.contains(&key) {
                 return Err("This decision is no longer current.".into());
             }
@@ -386,11 +391,27 @@ mod tests {
     fn decided(mode: Mode, w: Option<&Workflow>, checks: Checks, text: &str, dismissed: &[String]) -> Option<Decision> {
         let head = "a".repeat(40);
         decide(
-            &Facts { mode, room: "r", busy: false, reply: Some(Reply { seq: 7, by: Some("jigga"), text }), workflow: w, head: Some(&head), checks: &checks },
+            &Facts { mode, watched: false, room: "r", busy: false, reply: Some(Reply { seq: 7, by: Some("jigga"), text }), workflow: w, head: Some(&head), checks: &checks },
             |key| dismissed.iter().any(|k| k == key),
         )
     }
     const PASSED: Checks = Checks::Passed { pr: 42 };
+
+    #[test]
+    fn watcher_owns_failures_only_for_watched_tasks() {
+        for phase in [Phase::Ready, Phase::Failed] {
+            let w = workflow(phase, false);
+            let checks = Checks::Failed { pr: 42, detail: "check failed".into() };
+            let mut facts = Facts {
+                mode: Mode::DecisionCard, watched: true, room: "r", busy: false,
+                reply: Some(Reply { seq: 7, by: Some("worker"), text: "Done." }),
+                workflow: Some(&w), head: Some(&w.head), checks: &checks,
+            };
+            assert!(decide(&facts, |_| false).is_none());
+            facts.watched = false;
+            assert!(decide(&facts, |_| false).is_some());
+        }
+    }
 
     #[test]
     fn each_row_of_the_table() {
@@ -470,7 +491,7 @@ mod tests {
     #[test]
     fn a_new_commit_or_a_working_agent_removes_the_merge_card() {
         let ready = workflow(Phase::Ready, true);
-        let facts = |head: &'static str, busy| Facts { mode: Mode::DecisionCard, room: "r", busy, reply: Some(Reply { seq: 7, by: Some("jigga"), text: "Done." }), workflow: Some(&ready), head: Some(head), checks: &PASSED };
+        let facts = |head: &'static str, busy| Facts { mode: Mode::DecisionCard, watched: false, room: "r", busy, reply: Some(Reply { seq: 7, by: Some("jigga"), text: "Done." }), workflow: Some(&ready), head: Some(head), checks: &PASSED };
         let stale = "b".repeat(40);
         let stale: &'static str = Box::leak(stale.into_boxed_str());
         let same: &'static str = Box::leak("a".repeat(40).into_boxed_str());
@@ -586,7 +607,7 @@ mod tests {
         assert_eq!(Mode::from_settings(Some(&serde_json::json!({"replySuggestions":"decision_card"}))), Mode::DecisionCard);
         assert_eq!(Mode::from_settings(Some(&serde_json::json!({"replySuggestions":"off"}))), Mode::Off);
         assert_eq!(Mode::from_settings(Some(&serde_json::json!({"replySuggestions":"everything"}))), Mode::DecisionCard);
-        assert_eq!(Mode::from_settings(Some(&serde_json::json!({"replySuggestions":"next_steps"}))), Mode::DecisionCard);
+        assert_eq!(Mode::from_settings(Some(&serde_json::json!({"replySuggestions":"next_steps"}))), Mode::NextSteps);
         let state = ReplySuggestions::new(TestDataDir::new().path(), Mode::DEFAULT);
         state.set_mode(Mode::Off);
         assert_eq!(state.mode().as_str(), "off");

@@ -24,7 +24,7 @@ const decisions = {
 };
 function currentOffer() {
   const card = decisions[decisionKind];
-  const visible = card && (mode === 'decision_card' || decisionKind === 'merging');
+  const visible = card && (mode !== 'off' || decisionKind === 'merging');
   return {mode, checkout, replySeq:1, decision:visible ? {...card, kind:decisionKind, head:'abc', key:'phone-room/1/'+decisionKind} : null};
 }
 const transcript = [
@@ -81,7 +81,7 @@ window.WebSocket = class extends EventTarget {
     if (cmd === 'hello') response = {id,ok:{host_id:'fixture',boot_id:'boot',protocol:1,version:__APP_VERSION__,build_commit:__APP_BUILD__.commit,build_dirty:__APP_BUILD__.dirty,last_seq:0,resumed:false,
       capabilities:[...(params.has('textOnly') ? [] : ['phone_thread_git_v1']), ...(suggestions ? ['reply_suggestions_v1'] : [])]}};
     if (cmd === 'session_load') response = {id,ok:session};
-    if (cmd === 'room_state') response = {id,ok:{active:[],approvals:[],next_steps:suggestions ? {id:'builder',pending:false,steps:[{label:'Add logging',prompt:'Add diagnostic logging.'}]} : null,snapshot:{participants:[],transcript:suggestions ? transcript : [],options:{policy:'mention',max_bot_hops:3}}}};
+    if (cmd === 'room_state') response = {id,ok:{active:[],approvals:[],next_steps:suggestions ? {id:'builder',pending:false,steps:[{label:'Add logging',prompt:'Add diagnostic logging.'},{label:'Blue',prompt:'I prefer blue.'},{label:'Red',prompt:'I prefer red.'}]} : null,snapshot:{participants:[],transcript:suggestions ? transcript : [],options:{policy:'mention',max_bot_hops:3}}}};
     if (cmd === 'room_reply_decision' && args.id === 'phone-room') response = {id,ok:currentOffer()};
     if (cmd === 'room_reply_decision_dismiss' && args.key === currentOffer().decision?.key) {
       decisionKind = null;
@@ -195,6 +195,9 @@ async function runSuggestions() {
     await wait(() => select() && !select().disabled);
     select().value = next; select().dispatchEvent(new Event('change',{bubbles:true}));
     await wait(() => mode === next && !select().disabled);
+    const chip = document.querySelector('.usage-credit-chip');
+    if (chip?.textContent !== (next === 'off' ? 'No usage credits' : 'Usage credits')) throw Error('Incorrect credit badge');
+    if (chip.getBoundingClientRect().right > select().getBoundingClientRect().left) throw Error('Badge must precede the selector');
     const back = [...document.querySelectorAll('button')].find(b => b.getAttribute('aria-label')?.startsWith('Back to'));
     back.click(); await mount();
   }
@@ -205,6 +208,8 @@ async function runSuggestions() {
   step.click();
   await wait(() => document.querySelector('textarea[aria-label="Message this thread"]')?.value === 'Add diagnostic logging.');
   if (writes.length !== writesBeforeTap) throw Error('Suggestion sent a message');
+  await selectMode('next_steps');
+  await wait(() => list()?.querySelectorAll('.reply-next-step').length === 3);
   decisionKind = 'merging';
   await selectMode('off');
   await wait(() => card() && button('Cancel'));

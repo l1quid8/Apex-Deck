@@ -162,6 +162,8 @@ pub struct HostPaths {
 #[path = "runner/runtime.rs"]
 mod runner_runtime;
 
+mod pr_watch_runtime;
+
 pub struct Host {
     pub maintenance: Arc<crate::maintenance::MaintenanceGate>,
     paths: HostPaths,
@@ -173,6 +175,7 @@ pub struct Host {
     store: Store,
     settings_write: Mutex<()>,
     pub(crate) thread_git: crate::thread_git::ThreadGit,
+    pr_watch: crate::pr_watch::PrWatch,
     pub(crate) task_branches: Arc<crate::task_branches::TaskBranches>,
     /// This host, for work that has only `&self` (a turn's events) but must
     /// post a Deck note once the turn lets go of the thread.
@@ -341,6 +344,7 @@ impl Host {
         let host = Arc::new(Host {
             maintenance,
             thread_git: crate::thread_git::ThreadGit::new(&paths.data),
+            pr_watch: crate::pr_watch::PrWatch::load(&paths.data),
             task_branches: Arc::new(crate::task_branches::TaskBranches::new(&paths.data)),
             me: std::sync::OnceLock::new(),
             reply_suggestions: crate::reply_suggestions::ReplySuggestions::new(&paths.data, crate::reply_suggestions::Mode::from_settings(store.settings().ok().flatten().as_ref())),
@@ -503,6 +507,7 @@ impl Host {
         }
         if protected_ledgers_available {
             host.start_thread_git_worker();
+            host.start_pr_watcher();
         }
         Ok(host)
     }
@@ -1700,7 +1705,7 @@ impl Host {
         let _chain = Chain::start(&self.chains);
         let client_message_id = batch.client_message_id().map(str::to_owned);
         let error = Mutex::new(None);
-        let batch = batch.with_reply_decisions(self.reply_suggestions.mode() == crate::reply_suggestions::Mode::DecisionCard);
+        let batch = batch.with_reply_decisions(self.reply_suggestions.mode() != crate::reply_suggestions::Mode::Off);
         handle.runtime.run(batch, &self.turn_sink(id, handle, &error)).await;
         if let Some(request_id) = client_message_id.as_deref() {
             // A failed provider-progress save leaves the durable ID owned but
@@ -2561,7 +2566,6 @@ impl Host {
                     if named != actual {
                         return Err("The Full access folder does not match the thread's folder.".into());
                     }
-                    crate::folder_trust::check_full_allowed(&self.paths.data, &actual)?;
                 }
             }
         }
@@ -3896,7 +3900,7 @@ impl Host {
         let busy = handle.busy() || handle.has_open_questions();
         // A room mid-turn holds its own lock; that is "busy", not something to wait on.
         let last = handle.room.try_lock().and_then(|room| room.transcript().last().map(|m| (m.seq, match &m.speaker { apex_core::Speaker::Bot(by) => Some(by.to_string()), _ => None }, m.text.clone())));
-        let card = mode == Mode::DecisionCard && !busy && last.is_some();
+        let card = mode != Mode::Off && !busy && last.is_some();
         let waiting = workflow.as_ref().filter(|w| card && !w.pending());
         // HEAD where the commit is: the builder's task folder, or the thread's own. A folder gone means no card.
         let head = match waiting.map(|w| PathBuf::from(&w.root)).filter(|root| root.is_dir()) {
@@ -3920,7 +3924,7 @@ impl Host {
         };
         let dismissed = self.reply_suggestions.dismissed(&id)?;
         let decision = decide(
-            &Facts { mode, room: &id, busy, reply: last.as_ref().map(|(seq, by, text)| Reply { seq: *seq, by: by.as_deref(), text }), workflow: workflow.as_ref(), head: head.as_deref(), checks: &checks },
+            &Facts { mode, room: &id, busy, watched: workflow.as_ref().is_some_and(|w| self.merges_from_task_folder(&id, w)), reply: last.as_ref().map(|(seq, by, text)| Reply { seq: *seq, by: by.as_deref(), text }), workflow: workflow.as_ref(), head: head.as_deref(), checks: &checks },
             |key| dismissed.iter().any(|k| k == key),
         );
         let checkout = workflow.as_ref().map(|w| serde_json::json!({
@@ -4016,20 +4020,6 @@ impl Host {
     }
 
     fn room_mount_inner(&self, id: String, cwd: String) -> Result<serde_json::Value, String> {
-        // Full gate for mount: only Full bots are gated per Task 6
-        let target_for_gate = PathBuf::from(&cwd);
-        let has_full = {
-            if let Some(handle) = self.rooms.lock().unwrap().get(&id) {
-                handle.checkpoint.lock().unwrap().snapshot.participants.iter().any(|p| p.access == apex_core::Access::Full)
-            } else {
-                self.store.room(&id).ok().flatten().map(|s| s.snapshot.participants.iter().any(|p| p.access == apex_core::Access::Full)).unwrap_or(false)
-            }
-        };
-        if has_full {
-            if let Err(why) = crate::folder_trust::check_full_allowed(&self.paths.data, &target_for_gate) {
-                return Err(why);
-            }
-        }
         let _lifecycle = self.room_lifecycle.lock().unwrap();
         if self.assistant_tasks.execution(&id).map_err(|e| e.to_string())?.is_some() {
             return Err("An assistant worker chat cannot mount another worktree.".into());
@@ -5776,6 +5766,41 @@ mod host_tests {
     }
 
     #[test]
+    fn full_setting_needs_no_second_approval_but_preserves_device_binding_and_mount_checks() {
+        let (host, runtime, data) = host("full-setting");
+        let (repo, tree) = mount_repo(&data);
+        let mut config = named_bot("null", "Null");
+        config.access = Access::Ask;
+        host.room_create("r".into(), vec![config.clone()], RoomOptions::default(), Some(repo.to_string_lossy().into())).unwrap();
+        crate::folder_trust::mark_tainted(&data, &repo).unwrap();
+        crate::folder_trust::mark_tainted(&data, &tree).unwrap();
+        let mut full = config.clone(); full.access = Access::Full;
+        let change = |old, folder, check: &(dyn Fn() -> Result<(), String> + Send + Sync)| runtime.block_on(
+            host.room_update_participant_from_device("r".into(), full.clone(), Some(config.clone()), old, folder, check)
+        );
+        let actual = Some(repo.to_string_lossy().into_owned());
+        assert!(change(None, actual.clone(), &|| Ok(())).unwrap_err().contains("old_level"));
+        assert!(change(Some(Access::Read), actual.clone(), &|| Ok(())).unwrap_err().contains("access changed"));
+        assert!(change(Some(Access::Ask), Some(tree.to_string_lossy().into_owned()), &|| Ok(())).unwrap_err().contains("does not match"));
+        assert!(change(Some(Access::Ask), actual.clone(), &|| Err("device revoked".into())).unwrap_err().contains("device revoked"));
+        assert_eq!(change(Some(Access::Ask), actual, &|| Ok(())).unwrap().access, Access::Full);
+        assert!(!data.join("agent-full-access.json").exists());
+        // Automatic Git still needs its own lower-access jail. Full agent access
+        // must not silently turn those unrelated project operations into Full.
+        match host.room_mount("r".into(), tree.to_string_lossy().into()) {
+            Ok(_) => {
+                // Mount retires the live runtime; reopen the persisted thread.
+                host.room_create("r".into(), vec![], RoomOptions::default(), None).unwrap();
+                assert_eq!(host.handle("r").unwrap().context.cwd, Some(tree.clone()));
+                let saved = host.store.room("r").unwrap().unwrap();
+                assert_eq!(saved.snapshot.participants[0].access, Access::Full);
+            }
+            Err(why) => assert!(why.starts_with("needs bubblewrap (admin):") || why.starts_with("Automatic project operation refused:"), "{why}"),
+        }
+        assert!(!crate::folder_trust::is_accepted(&data, &tree));
+    }
+
+    #[test]
     fn room_mount_refuses_busy_foreign_missing_and_subfolders() {
         let (host, runtime, data) = host("mount-guards");
         let (repo, tree) = mount_repo(&data);
@@ -6701,6 +6726,23 @@ done
     }
 
     #[test]
+    fn next_steps_mode_delivers_three_choices_from_one_extra_reply() {
+        use crate::reply_suggestions::Mode;
+        let (host, runtime, data) = host("three-next-steps");
+        host.settings_reply_suggestions_set(Mode::NextSteps).unwrap();
+        assert_eq!(Mode::from_settings(host.settings_load().unwrap().as_ref()), Mode::NextSteps);
+        let long = "The build is available to try on your device. Which of the three colors should we use for the next version?";
+        let replies = [long, r#"[{"prompt":"Blue"},{"prompt":"Green"},{"prompt":"Red"}]"#];
+        host.room_create("r".into(), vec![scripted("bot", &replies)], RoomOptions::default(), None).unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        host.events().listen(move |envelope| sink.lock().unwrap().push(envelope.event.clone()));
+        runtime.block_on(Arc::clone(&host).room_post_to("r".into(), "Colors?".into(), vec![ParticipantId::new("bot")])).unwrap();
+        assert!(wait_for(&seen, |e| matches!(e, RoomEvent::NextSteps { pending: false, steps, .. } if steps.len() == 3)).is_some());
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
     fn next_steps_are_skipped_when_a_reply_ends_in_a_deck_line() {
         let (host, runtime, data) = host("next-steps-deck-line");
         for (room, line) in [
@@ -6986,6 +7028,178 @@ done
             self.host.shutdown();
             let _ = std::fs::remove_dir_all(&self.data);
         }
+    }
+
+    #[test]
+    fn a_wake_is_a_deck_note_keeps_last_targets_and_bumps_observation_revision() {
+        let t = ship_thread("wake-note", &["a"], &[
+            ("a", Access::Full, &["I'll fix the check."]),
+            ("b", Access::Full, &["I'll wait."]),
+        ]);
+        t.say("b", "@b wait for a review");
+        let handle = t.host.handle("r").unwrap();
+        let revision = handle.observation_revision.load(Ordering::SeqCst);
+        let before = t.host.store.room("r").unwrap().unwrap().snapshot;
+        assert_eq!(before.last_targets, vec![ParticipantId::new("b")]);
+
+        t.runtime.block_on(t.host.wake_agent("r", &ParticipantId::new("a"), "@a fix the check".into())).unwrap();
+        t.until(|| !handle.busy());
+        let after = t.host.store.room("r").unwrap().unwrap().snapshot;
+        assert_eq!(after.last_targets, before.last_targets);
+        assert_eq!(after.transcript[before.transcript.len()].speaker, apex_core::Speaker::Bot(ParticipantId::new("deck")));
+        assert_eq!(t.notes(), vec!["@a fix the check"]);
+        assert!(handle.observation_revision.load(Ordering::SeqCst) > revision);
+        t.finish();
+    }
+
+    #[test]
+    fn the_woken_agent_can_hand_off_to_its_reviewer() {
+        let t = ship_thread("wake-review", &["a"], &[
+            ("a", Access::Full, &["@reviewer please review my fix."]),
+            ("reviewer", Access::Read, &["The fix looks good."]),
+        ]);
+        t.runtime.block_on(t.host.wake_agent("r", &ParticipantId::new("a"), "@a fix the check".into())).unwrap();
+        t.until(|| t.host.store.room("r").unwrap().unwrap().snapshot.transcript.iter()
+            .any(|m| m.speaker == apex_core::Speaker::Bot(ParticipantId::new("reviewer")) && m.text == "The fix looks good."));
+        t.until(|| !t.host.handle("r").unwrap().busy());
+        t.finish();
+    }
+
+    #[test]
+    fn a_wake_opens_a_closed_thread() {
+        let t = ship_thread("wake-closed-room", &["a"], &[("a", Access::Full, &["Working on it."])]);
+        t.host.room_close("r".into());
+        assert!(t.host.handle("r").is_err());
+        t.runtime.block_on(t.host.wake_agent("r", &ParticipantId::new("a"), "@a fix the check".into())).unwrap();
+        t.until(|| !t.host.handle("r").unwrap().busy());
+        assert_eq!(t.notes(), vec!["@a fix the check"]);
+        t.finish();
+    }
+
+    #[test]
+    fn seen_is_not_saved_when_wake_agent_fails() {
+        let t = ship_thread("wake-failed-save", &["a"], &[("a", Access::Full, &["Built.\nDeck built {sha:a}", "Working on it."])]);
+        t.runtime.block_on(t.host.room_post("r".into(), "@a build".into())).unwrap();
+        let w = t.workflow().unwrap();
+        let observation = crate::pr_watch::Observation::LocalCheckFailed { head: w.head.clone(), detail: "Type error.".into() };
+        t.host.store.fail_next_room_save();
+        let failure = t.runtime.block_on(t.host.apply_pr_observation("r", &w, &observation));
+        assert_eq!(failure, Err("Injected room save failure.".into()));
+        assert!(t.notes().is_empty());
+        assert_eq!(t.host.pr_watch.seen("r", &w).unwrap().wakes, 0);
+
+        t.runtime.block_on(t.host.apply_pr_observation("r", &w, &observation)).unwrap();
+        t.until(|| !t.host.handle("r").unwrap().busy());
+        assert_eq!(t.host.pr_watch.seen("r", &w).unwrap().wakes, 1);
+        t.finish();
+    }
+
+    #[test]
+    fn a_pr_closed_without_merging_ends_the_task_and_blocks_the_workflow() {
+        use crate::pr_watch::Observation;
+        use crate::thread_git::Phase;
+        let t = ship_thread("watch-closed-pr", &["a"], &[("a", Access::Full, &["Built.\nDeck built {sha:a}"])]);
+        t.runtime.block_on(t.host.room_post("r".into(), "Ship it.".into())).unwrap();
+        let armed = t.host.store.room("r").unwrap().unwrap().snapshot;
+        assert!(crate::thread_git::ship::ship_armed(&armed.transcript, armed.compaction.as_ref()));
+        let folder = t.host.task_branches.get("r", "a").unwrap().unwrap();
+        let w = t.host.thread_git.set_pr("r", &t.workflow().unwrap(), 42).unwrap();
+        t.runtime.block_on(t.host.apply_pr_observation("r", &w, &Observation::Closed)).unwrap();
+        assert_eq!(t.workflow().unwrap().phase, Phase::Blocked);
+        assert!(t.host.task_branches.get("r", "a").unwrap().is_none());
+        assert!(folder.path.is_dir());
+        let display_path = crate::assistant_git::external_path(Path::new(&w.root));
+        assert_eq!(t.notes(), vec![format!("PR #42 was closed without merging. Its task folder stays at {}.\n{} · https://github.com/{}/pull/42", display_path.display(), w.branch, w.repo)]);
+        let closed = t.host.store.room("r").unwrap().unwrap().snapshot;
+        assert!(!crate::thread_git::ship::ship_armed(&closed.transcript, closed.compaction.as_ref()));
+        assert!(t.offer()["decision"].is_null());
+        t.finish();
+    }
+
+    #[test]
+    fn closing_retries_when_the_note_cannot_be_saved() {
+        use crate::pr_watch::Observation;
+        let t = ship_thread("watch-close-note-retry", &["a"], &[("a", Access::Full, &["Built.\nDeck built {sha:a}"])]);
+        t.runtime.block_on(t.host.room_post("r".into(), "@a build".into())).unwrap();
+        let w = t.host.thread_git.set_pr("r", &t.workflow().unwrap(), 42).unwrap();
+        t.host.store.fail_next_room_save();
+        let failure = t.runtime.block_on(t.host.apply_pr_observation("r", &w, &Observation::Closed));
+        assert_eq!(failure, Err("Injected room save failure.".into()));
+        assert!(t.notes().is_empty());
+        assert!(t.host.task_branches.get("r", "a").unwrap().is_some());
+
+        let closing = t.workflow().unwrap();
+        assert!(closing.close_pending);
+        t.runtime.block_on(t.host.watch_pull_request("r", closing)).unwrap();
+        assert!(!t.workflow().unwrap().close_pending);
+        assert_eq!(t.notes().len(), 1);
+        assert!(t.host.task_branches.get("r", "a").unwrap().is_none());
+        t.finish();
+    }
+
+    #[test]
+    fn closing_retries_task_release_after_restart_without_reposting_the_note() {
+        use crate::pr_watch::Observation;
+        let t = ship_thread("watch-close-release-retry", &["a"], &[("a", Access::Full, &["Built.\nDeck built {sha:a}"])]);
+        t.runtime.block_on(t.host.room_post("r".into(), "@a build".into())).unwrap();
+        let w = t.host.thread_git.set_pr("r", &t.workflow().unwrap(), 42).unwrap();
+        t.host.task_branches.fail_next_save();
+        let failure = t.runtime.block_on(t.host.apply_pr_observation("r", &w, &Observation::Closed));
+        assert_eq!(failure, Err("Injected task ledger save failure.".into()));
+        assert!(t.host.task_branches.get("r", "a").unwrap().is_some());
+        assert!(t.workflow().unwrap().close_pending);
+        assert_eq!(t.notes().len(), 1);
+
+        let ShipThread { host, runtime, data, repo, shas } = t;
+        host.shutdown();
+        drop(host);
+        let host = Host::new(HostPaths { data: data.clone(), downloads: None }, runtime.handle().clone());
+        let t = ShipThread { host, runtime, data, repo, shas };
+        let closing = t.workflow().unwrap();
+        t.runtime.block_on(t.host.watch_pull_request("r", closing)).unwrap();
+        assert!(!t.workflow().unwrap().close_pending);
+        assert_eq!(t.notes().len(), 1);
+        assert!(t.host.task_branches.get("r", "a").unwrap().is_none());
+        t.finish();
+    }
+
+    #[test]
+    fn closing_a_reopened_pr_posts_a_new_note_for_the_same_pr() {
+        use crate::pr_watch::Observation;
+        let t = ship_thread("watch-close-reopen", &["a"], &[("a", Access::Full, &["Built.\nDeck built {sha:a}"])]);
+        t.runtime.block_on(t.host.room_post("r".into(), "@a build".into())).unwrap();
+        let open = t.host.thread_git.set_pr("r", &t.workflow().unwrap(), 42).unwrap();
+        t.runtime.block_on(t.host.apply_pr_observation("r", &open, &Observation::Closed)).unwrap();
+        assert_eq!(t.notes().len(), 1);
+
+        // GitHub reopened the same PR and an active merge job saw it close
+        // again. The old folder is now kept on disk and released from Deck.
+        t.host.thread_git.put("r", open.clone()).unwrap();
+        let closing = t.host.thread_git.mark_closed("r", &open).unwrap();
+        t.runtime.block_on(t.host.watch_pull_request("r", closing)).unwrap();
+        let notes = t.notes();
+        assert_eq!(notes.len(), 2);
+        assert!(notes.iter().all(|note| note.starts_with("PR #42 was closed without merging.")));
+        assert!(!t.workflow().unwrap().close_pending);
+        t.finish();
+    }
+
+    #[test]
+    fn closing_an_old_pr_does_not_release_the_owners_replacement_task() {
+        let t = ship_thread("watch-close-replacement", &["a"], &[("a", Access::Full, &["Built.\nDeck built {sha:a}"])]);
+        t.runtime.block_on(t.host.room_post("r".into(), "@a build".into())).unwrap();
+        let old = t.host.task_branches.get("r", "a").unwrap().unwrap();
+        let w = t.host.thread_git.set_pr("r", &t.workflow().unwrap(), 42).unwrap();
+        let closing = t.host.thread_git.mark_closed("r", &w).unwrap();
+        t.host.task_branches.abandon(&old).unwrap();
+        let new = t.host.task_branches.start(&t.data, t.repo.root(), None, "r", "a", "fix/replacement").unwrap().folder;
+
+        t.runtime.block_on(t.host.watch_pull_request("r", closing)).unwrap();
+        assert_eq!(t.host.task_branches.get("r", "a").unwrap(), Some(new));
+        assert!(old.path.is_dir());
+        assert!(!t.workflow().unwrap().close_pending);
+        assert_eq!(t.notes(), vec![format!("PR #42 was closed without merging.\n{} · https://github.com/{}/pull/42", w.branch, w.repo)]);
+        t.finish();
     }
 
     #[test]

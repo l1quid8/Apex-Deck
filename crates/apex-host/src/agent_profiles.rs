@@ -1,6 +1,7 @@
 //! Narrow saved-profile mutations. Executable overrides and grants never enter
 //! this interface; callers choose one of the supported provider runtimes.
 use serde::{Deserialize, Serialize};
+use ring::rand::{SecureRandom, SystemRandom};
 use serde_json::{json, Value};
 use crate::Host;
 
@@ -34,8 +35,12 @@ impl SaveProfile {
         if self.profile_id.is_some() && !self.replace { return Err("profileId is allowed only when editing an existing agent".into()); }
         let id=match self.profile_id.as_deref() {
             Some(id) if id.trim().is_empty() || id.len()>256 || id.chars().any(char::is_control) => return Err("Invalid saved profile identity".into()),
-            Some(id)=>id,
-            None=>handle.as_str(),
+            Some(id)=>id.to_owned(),
+            None=>{
+                let mut bytes=[0u8;16];
+                SystemRandom::new().fill(&mut bytes).map_err(|_|"Could not generate agent identity")?;
+                format!("agent-{}",bytes.iter().map(|byte|format!("{byte:02x}")).collect::<String>())
+            },
         };
         let value=json!({"id":id,"display_name":self.name.trim(),"backend":{"kind":"agent","tool":tool,"model":self.model},"persona":self.instructions,"access":self.access});
         let parsed=serde_json::from_value::<apex_core::ParticipantConfig>(value.clone()).map_err(|e|e.to_string())?;
@@ -49,7 +54,17 @@ impl Host {
         let session=self.session_load()?.unwrap_or(json!({}));
         Ok(json!({"revision":session["profileRevision"].as_u64().unwrap_or(0),"profiles":session["profiles"].as_array().cloned().unwrap_or_default()}))
     }
-    pub fn agent_profile_save(&self,input:SaveProfile)->Result<Value,String>{
+    pub fn agent_profile_save(&self,mut input:SaveProfile)->Result<Value,String>{
+        // Older CLI clients replace by handle. Resolve that handle to the saved
+        // identity before the revision-checked write, never mint a replacement ID.
+        if input.replace && input.profile_id.is_none() {
+            let handle=input.handle.trim().trim_start_matches('@').to_lowercase();
+            let session=self.session_load()?.unwrap_or(json!({}));
+            input.profile_id=session["profiles"].as_array().into_iter().flatten()
+                .filter_map(|saved|serde_json::from_value::<apex_core::ParticipantConfig>(saved.clone()).ok())
+                .find(|saved|apex_core::mention_for(saved)==handle).map(|saved|saved.id.to_string());
+            if input.profile_id.is_none() {return Err("Agent no longer exists; create it explicitly".into());}
+        }
         let profile=input.profile()?;
         let session=self.store().update_agent_profile(profile.clone(),input.expected_revision,input.replace)?;
         let saved=session["profiles"].as_array().and_then(|profiles|profiles.iter().find(|saved|saved["id"].as_str().zip(profile["id"].as_str()).is_some_and(|(a,b)|a.eq_ignore_ascii_case(b)))).cloned().ok_or("Saved agent was not found after updating")?;
@@ -70,7 +85,8 @@ impl Host {
         assert!(store.update_agent_profile(input("Null").profile().unwrap(),0,false).is_err());
         store.update_agent_profile(input("Null").profile().unwrap(),1,false).unwrap();
         let reopened=crate::storage::Store::new(path.clone()).session().unwrap().unwrap();
-        assert_eq!(reopened["profiles"][0]["id"],"jigga"); assert_eq!(reopened["profiles"][1]["id"],"null");
+        assert_eq!(reopened["profiles"][0]["display_name"],"Jigga"); assert_eq!(reopened["profiles"][1]["display_name"],"Null");
+        assert_ne!(reopened["profiles"][0]["id"],reopened["profiles"][1]["id"]);
         assert_eq!(reopened["profiles"][1]["persona"],"line one\nline two");
         assert_eq!(reopened["future"]["keep"],true); assert_eq!(reopened["panes"][0]["id"],"keep");
         std::fs::remove_dir_all(path).unwrap();
@@ -82,7 +98,7 @@ impl Host {
         let revision=initial["profileRevision"].as_u64().unwrap();
         store.update_agent_profile(input("null").profile().unwrap(),revision,false).unwrap();
         let accepted=store.save_session_snapshot(&json!({"version":1,"profiles":[],"profileRevision":revision,"panes":[{"id":"new-layout"}],"savedBy":"desktop:2"})).unwrap();
-        assert_eq!(accepted["profiles"][0]["id"],"null");
+        assert_eq!(accepted["profiles"][0]["display_name"],"null");
         assert_eq!(accepted["profileRevision"],revision+1);
         assert_eq!(accepted["profileSavedBy"],"agent-profile");
         assert_eq!(accepted["panes"][0]["id"],"new-layout");
@@ -163,6 +179,25 @@ impl Host {
         assert_eq!(response["profile"]["future"]["keep"],true);
         drop(host);drop(runtime);
         std::fs::remove_dir_all(path).unwrap();
+    }
+    #[test] fn new_agent_identity_is_never_derived_from_a_reused_name() {
+        let first=input("null").profile().unwrap();
+        let recreated=input("null").profile().unwrap();
+        assert_ne!(first["id"],recreated["id"]);
+        let id=first["id"].as_str().unwrap();
+        assert!(id.starts_with("agent-") && id.len()==38);
+        assert!(id[6..].bytes().all(|byte|byte.is_ascii_hexdigit()));
+    }
+    #[test] fn legacy_cli_replace_by_handle_keeps_opaque_identity() {
+        let path=std::env::temp_dir().join(format!("apex-profile-legacy-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let runtime=tokio::runtime::Runtime::new().unwrap();
+        let host=Host::new(crate::HostPaths{data:path.clone(),downloads:None},runtime.handle().clone());
+        let created=host.agent_profile_save(input("null")).unwrap();
+        let mut edit=input("null");edit.replace=true;edit.expected_revision=created["revision"].as_u64().unwrap();edit.instructions="updated".into();
+        let saved=host.agent_profile_save(edit).unwrap();
+        assert_eq!(saved["profile"]["id"],created["profile"]["id"]);
+        assert_eq!(saved["profile"]["persona"],"updated");
+        drop(host);drop(runtime);std::fs::remove_dir_all(path).unwrap();
     }
     #[test] fn rejects_unsafe_profile_fields(){
         for handle in ["all","bad name","../null",""] {assert!(input(handle).profile().is_err());}

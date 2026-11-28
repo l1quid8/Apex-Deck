@@ -11,3 +11,11 @@ export function ComposerModeControls({ planOn, onPlan, tldr, onTldr }: { planOn:
     <button type="button" className="tldr-pill" aria-pressed={tldr} aria-label="TL;DR mode" title={`TL;DR mode ${tldr ? 'on' : 'off'}: take a chill pill (⌘⇧T)`} onPointerDown={event => event.preventDefault()} onClick={onTldr}><span aria-hidden>TL;</span><span aria-hidden>DR</span></button>
   </>;
 }
+
+/** The phone Threads row, shared by thread and assistant composers. */
+export function PhoneComposerRow({tools, children, inputClassName = ''}: {tools?: ReactNode; children: ReactNode; inputClassName?: string}) {
+  return <div className="ph-compose-row">{tools}<div className={`ph-input${inputClassName ? ` ${inputClassName}` : ''}`}>{children}</div></div>;
+}
+export function ComposerPlanControl({onPlan}: {onPlan(): void}) {
+  return <button type="button" className="plan-chip ph-plan" title="Plan is on: plans only, no changes." aria-label="Plan is on. Turn it off" onPointerDown={event => event.preventDefault()} onClick={onPlan}><span aria-hidden="true">◇</span><span className="plan-chip-label">Plan</span><span className="plan-chip-x" aria-hidden="true">✕</span></button>;
+}

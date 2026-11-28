@@ -57,12 +57,12 @@ export function restoreQuestions(state: QuestionState, room: string, live: Pick<
 }
 
 /** What the form above the composer shows. */
-export function formView(asks: ThreadAsks | undefined): FormView {
+export function formView(asks: ThreadAsks | undefined, limit: 1 | 3 = 1): FormView {
   if (!asks) return { kind: "none" };
   const [first] = asks.questions;
   if (first) return { kind: "question", ask: first, position: 1, of: asks.questions.length };
   if (asks.offer?.pending) return { kind: "pending", by: asks.offer.by };
-  if (asks.offer?.steps.length) return { kind: "steps", offer: { ...asks.offer, steps: asks.offer.steps.slice(0, 1) } };
+  if (asks.offer?.steps.length) return { kind: "steps", offer: { ...asks.offer, steps: asks.offer.steps.slice(0, limit) } };
   return { kind: "none" };
 }
 

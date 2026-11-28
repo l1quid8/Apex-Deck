@@ -25,8 +25,12 @@ pub(crate) fn card_owns(text: &str) -> bool {
 /// message or another turn since then means there is nothing to suggest.
 /// `answers` is the finished chain's interactive-answers preference.
 pub(crate) fn suggest(host: Arc<Host>, room: String, handle: RoomHandle, revision: u64, answers: bool) {
-    let enabled = |host: &Host| host.reply_suggestions.mode() == Mode::DecisionCard;
-    if !enabled(&host) { return; }
+    let enabled = |host: &Host| host.reply_suggestions.mode() != Mode::Off;
+    let (prompt, limit) = match host.reply_suggestions.mode() {
+        Mode::Off => return,
+        Mode::DecisionCard => (next_steps::ASK, 1),
+        Mode::NextSteps => (next_steps::ASK_THREE, next_steps::MAX_STEPS),
+    };
     let Ok(maintenance) = host.maintenance.enter() else { return; };
     let runtime = host.runtime().clone();
     runtime.spawn(async move {
@@ -46,7 +50,7 @@ pub(crate) fn suggest(host: Arc<Host>, room: String, handle: RoomHandle, revisio
             let current = handle.room.lock().await;
             current.transcript().last().and_then(|last| match &last.speaker {
                 Speaker::Bot(id) if last.text.chars().count() >= next_steps::MIN_REPLY_CHARS && !card_owns(&last.text) => {
-                    current.next_steps_request_with_answers(id, answers).map(|prepared| (id.clone(), prepared))
+                    current.next_steps_request_with_answers(id, answers, prompt).map(|prepared| (id.clone(), prepared))
                 }
                 _ => None,
             })
@@ -63,7 +67,7 @@ pub(crate) fn suggest(host: Arc<Host>, room: String, handle: RoomHandle, revisio
         };
         let steps = tokio::select! {
             result = tokio::time::timeout(TIMEOUT, participant.respond_with_approvals(request, &quiet, &NoApprover)) => match result {
-                Ok(Ok(reply)) => next_steps::parse(&reply.text), _ => Vec::new(),
+                Ok(Ok(reply)) => next_steps::parse_with_limit(&reply.text, limit), _ => Vec::new(),
             },
             // Drop only this suggestion future and its owned processes. A global
             // participant cancel could stop the newer human turn that superseded it.

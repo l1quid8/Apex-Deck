@@ -350,7 +350,7 @@ impl Participant for OpenAiCompatParticipant {
 
         // Tools in a chat turn, unless the model can't take them or this is
         // only the question about what the person will ask next.
-        let next_steps = request.turns.last().is_some_and(|t| t.role == Role::User && t.content == apex_core::next_steps::ASK);
+        let next_steps = request.turns.last().is_some_and(|t| t.role == Role::User && apex_core::next_steps::is_ask(&t.content));
         let mut turn = match &self.tools {
             Some(tools) if !next_steps && tools_allowed(self.tools_off_until.lock().unwrap().to_owned(), Instant::now()) && crate::api_info::cached_tools(base_url, api_key_env.as_deref(), model) != Some(false) => {
                 let access = request.access.unwrap_or(self.config.access);

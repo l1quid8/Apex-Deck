@@ -128,6 +128,7 @@ pub enum Phase {
     Submitting,
     Cancelling,
     Cancelled,
+    Superseded,
     Failed,
     Blocked,
     Merged,
@@ -150,6 +151,12 @@ pub struct Workflow {
     pub result_oid: Option<String>,
     pub pushed: bool,
     pub fix_requested: bool,
+    #[serde(default)]
+    pub local_check_failed: bool,
+    #[serde(default)]
+    pub(crate) close_pending: bool,
+    #[serde(default)]
+    pub(crate) close_since: Option<usize>,
     /// Asked for from the decision card, where the checks had already passed:
     /// if they no longer do, the merge stops and nothing waits.
     #[serde(default)]
@@ -190,6 +197,7 @@ impl Workflow {
         }
         self.generation += 1;
         self.phase = Phase::Preparing;
+        self.local_check_failed = false;
         self.detail = "Publishing the commit…".into();
         Ok(())
     }
@@ -250,6 +258,60 @@ impl ThreadGit {
                 .collect())
         })
     }
+    pub(crate) fn workflows(&self) -> Result<Vec<(String, Workflow)>, String> {
+        self.edit(|rooms| Ok(rooms.iter()
+            .filter(|(_, w)| w.close_pending || (!w.pending() && !matches!(w.phase, Phase::Merged | Phase::Blocked)))
+            .map(|(room, w)| (room.clone(), w.clone()))
+            .collect()))
+    }
+
+    pub(crate) fn set_pr(&self, room: &str, expected: &Workflow, pr: u64) -> Result<Workflow, String> {
+        let mut next = expected.clone();
+        next.pr = Some(pr);
+        self.save_observation(room, expected, next.clone())?;
+        Ok(next)
+    }
+
+    pub(crate) fn mark_closed(&self, room: &str, expected: &Workflow) -> Result<Workflow, String> {
+        let mut next = expected.clone();
+        next.phase = Phase::Blocked;
+        next.close_pending = true;
+        next.close_since = None;
+        next.detail = "The pull request was closed without merging.".into();
+        self.save_observation(room, expected, next.clone())?;
+        Ok(next)
+    }
+
+    pub(crate) fn start_close_note(&self, room: &str, expected: &Workflow, first_seq: usize) -> Result<Workflow, String> {
+        let mut next = expected.clone();
+        next.close_since = Some(first_seq);
+        self.save_observation(room, expected, next.clone())?;
+        Ok(next)
+    }
+
+    pub(crate) fn finish_close(&self, room: &str, expected: &Workflow) -> Result<(), String> {
+        let mut next = expected.clone();
+        next.close_pending = false;
+        self.save_observation(room, expected, next)
+    }
+
+    pub(crate) fn mark_observed_merge(&self, room: &str, expected: &Workflow, oid: String, head: String) -> Result<(), String> {
+        let mut next = expected.clone();
+        next.result_oid = Some(oid);
+        next.head = head;
+        next.phase = Phase::Syncing;
+        next.detail = "Updating the local checkout…".into();
+        self.save_observation(room, expected, next)
+    }
+
+    fn save_observation(&self, room: &str, expected: &Workflow, next: Workflow) -> Result<(), String> {
+        if self.update(room, expected, |w| *w = next)? {
+            Ok(())
+        } else {
+            Err("The workflow changed while checking the pull request.".into())
+        }
+    }
+
     // Every async result compares its complete starting state before applying.
     fn update(
         &self,
@@ -298,6 +360,9 @@ impl ThreadGit {
         let repo = repository(&read(&["remote", "get-url", "--push", "origin"])?)?;
         self.edit(|r| {
             let current = r.get(room);
+            if current.is_some_and(|w| w.close_pending) {
+                return Err("Deck is finishing the previous closed pull request.".into());
+            }
             let same = current.is_some_and(|w| {
                 w.head == sha && w.repo == repo && w.branch == branch && w.root == root
             });
@@ -332,6 +397,9 @@ impl ThreadGit {
                         detail: "Waiting for checks".into(),
                         pushed: false,
                         fix_requested: false,
+                        local_check_failed: false,
+                        close_pending: false,
+                        close_since: None,
                         ready_only: false,
                     },
                 );
@@ -489,6 +557,7 @@ pub async fn push(data: &Path, state: &State) -> Result<(), String> {
 mod github;
 pub(crate) mod ship;
 pub use github::checks;
+pub(crate) use github::{find_pr, observe_pr};
 #[cfg(test)]
 pub(crate) use github::fake_checks;
 #[cfg(test)]

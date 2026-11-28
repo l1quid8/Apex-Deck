@@ -10,7 +10,8 @@ test("a batch caps new bots at four", () => {
 
 test("checkBatch accepts distinct names and gives each its id", () => {
   const result = checkBatch([bot("Opus"), bot("Forge")], { others: [], agents: [] });
-  assert.deepEqual(result.ok.map((c) => c.id), ["opus", "forge"]);
+  for (const item of result.ok) assert.match(item.id, /^agent-[0-9a-f-]{36}$/);
+  assert.notEqual(result.ok[0].id, result.ok[1].id);
 });
 
 test("checkBatch refuses two new bots with the same handle", () => {
@@ -79,4 +80,9 @@ test("lineupText says who will join the thread", async () => {
   assert.equal(lineupText([]), "Pick at least one agent");
   assert.equal(lineupText(["Null"]), "1 agent will join: Null");
   assert.equal(lineupText(["Null", "  ", "Opus"]), "3 agents will join: Null, New agent, Opus");
+});
+
+test("batch saved-agent copies keep their identity", () => {
+  const saved = { id: "agent-866a3317-38ca-484a-bc9b-356293eeafab", display_name: "Opus" };
+  assert.equal(checkBatch([saved], { others: [], agents: [saved] }).ok[0].id, saved.id);
 });

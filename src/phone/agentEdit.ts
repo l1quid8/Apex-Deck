@@ -84,7 +84,7 @@ export const agentPicksSpeed = (config: ParticipantConfig) => phoneSpeed(config)
 
 const identityOf = (draft: AgentDraft, others: readonly ParticipantConfig[], editing: string | null) => {
   const name = draft.name.trim();
-  // An edited agent keeps its id; a new one takes the id its name gives, or the next free one.
+  // Edits keep their identity; creation receives a fresh opaque identity.
   return botIdentity({ id: editing ?? slug(name), display_name: name }, { editing, others, agents: [], place: "agents" });
 };
 

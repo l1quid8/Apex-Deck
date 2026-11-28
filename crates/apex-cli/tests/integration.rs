@@ -20,14 +20,28 @@ async fn standalone_profiles_survive_backend_restart_without_replacing_session_f
     let mut fixture=Fixture::start();
     let (client,_events,_)=fixture.connect().await;
     client.request("session_save",json!({"session":{"version":1,"future":{"preserve":true},"panes":[]}})).await.unwrap();
+    let mut identities=Vec::new();
     for (revision,name,provider) in [(0,"Jigga","claude"),(1,"Null","codex")] {
-        client.request("agent_profile_save",json!({"handle":name.to_lowercase(),"name":name,"provider":provider,"model":null,"instructions":format!("{name} instructions\nsecond line"),"access":"ask","expectedRevision":revision})).await.unwrap();
+        let created=client.request("agent_profile_save",json!({"handle":name.to_lowercase(),"name":name,"provider":provider,"model":null,"instructions":format!("{name} instructions\nsecond line"),"access":"ask","expectedRevision":revision})).await.unwrap();
+        let id=created["profile"]["id"].as_str().unwrap().to_owned();
+        assert!(id.starts_with("agent-") && id.len()==38,"opaque generated identity: {id}");
+        assert_eq!(created["profile"]["display_name"],name);
+        let profile:apex_core::ParticipantConfig=serde_json::from_value(created["profile"].clone()).unwrap();
+        assert_eq!(apex_core::mention_for(&profile),name.to_lowercase());
+        identities.push(id);
     }
+    assert_ne!(identities[0],identities[1]);
     assert!(client.request("agent_profile_save",json!({"handle":"null","name":"Null","provider":"codex","model":null,"instructions":"stale","access":"ask","expectedRevision":0})).await.is_err());
     drop(client);fixture.restart();
     let (client,_events,_)=fixture.connect().await;
     let saved=client.request("agent_profile_list",json!({})).await.unwrap();
-    assert_eq!(saved["revision"],2);assert_eq!(saved["profiles"][0]["id"],"jigga");assert_eq!(saved["profiles"][1]["id"],"null");
+    assert_eq!(saved["revision"],2);
+    for (index,name) in ["Jigga","Null"].into_iter().enumerate() {
+        assert_eq!(saved["profiles"][index]["id"],identities[index]);
+        assert_eq!(saved["profiles"][index]["display_name"],name);
+        let profile:apex_core::ParticipantConfig=serde_json::from_value(saved["profiles"][index].clone()).unwrap();
+        assert_eq!(apex_core::mention_for(&profile),name.to_lowercase());
+    }
     let session=client.request("session_load",json!({})).await.unwrap();assert_eq!(session["future"]["preserve"],true);
 }
 impl Fixture {

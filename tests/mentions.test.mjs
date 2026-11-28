@@ -54,10 +54,10 @@ test("a new bot whose natural id a renamed bot still holds gets the next free on
   assert.equal(naming.freeId("jigga", ["jigga", "jigga-2"]), "jigga-3");
 });
 
-test("a new bot gets the id its name gives, or the next free one when a renamed bot holds it", () => {
+test("a new bot gets an opaque identity independent of its name", () => {
   const chat = (bot, others, agents = []) => naming.botIdentity(bot, { editing: null, others, agents, place: "chat" });
-  assert.deepEqual(chat({ id: "jigga", display_name: "Jigga" }, [atlas, nul]), { id: "jigga-2" });
-  assert.deepEqual(chat({ id: "ada", display_name: "Ada" }, [atlas, nul]), { id: "ada" });
+  assert.match(chat({ id: "jigga", display_name: "Jigga" }, [atlas, nul]).id, /^agent-[0-9a-f-]{36}$/);
+  assert.match(chat({ id: "ada", display_name: "Ada" }, [atlas, nul]).id, /^agent-[0-9a-f-]{36}$/);
   assert.deepEqual(chat({ id: "atlas", display_name: "Atlas" }, [atlas, nul]), { error: "Atlas in this chat already answers to @atlas. Pick a different name." });
   // A bot that still has its first name is not renamed: a second "Jigga" is a clash, not a jigga-2.
   assert.deepEqual(chat({ id: "jigga", display_name: "Jigga" }, [{ id: "jigga", display_name: "Jigga" }]), { error: "Jigga in this chat already answers to @jigga. Pick a different name." });
@@ -65,7 +65,7 @@ test("a new bot gets the id its name gives, or the next free one when a renamed 
 
 test("in a chat, a new bot never takes the id of an agent with another name, but does share one with its namesake", () => {
   const chat = (agents) => naming.botIdentity({ id: "jigga", display_name: "Jigga" }, { editing: null, others: [nul], agents, place: "chat" });
-  assert.deepEqual(chat([atlas]), { id: "jigga-2" }, "Atlas in the Agents tab keeps the id jigga");
+  assert.match(chat([atlas]).id, /^agent-[0-9a-f-]{36}$/, "a namesake is not an existing agent copy");
   assert.deepEqual(chat([{ id: "jigga", display_name: "Jigga" }]), { id: "jigga" }, "the Agents tab's Jigga, as before");
 });
 
@@ -75,4 +75,14 @@ test("an edited bot keeps its id, and can't take a name another bot answers to",
   assert.deepEqual(edit("null"), { error: "Null in this chat already answers to @null. Pick a different name." });
   assert.deepEqual(edit("Null", "agents"), { error: "Your agent Null already answers to @null. Pick a different name." });
   assert.deepEqual(edit("-_-"), { error: "A name needs a letter or a number. Pick a different name." }, "it would be mentioned by its old name");
+});
+
+ test("deleting and recreating a name never reuses its identity; thread copies retain identity", () => {
+  const create = () => naming.botIdentity({ id: "null", display_name: "Null" }, { editing: null, others: [], agents: [], place: "agents" });
+  const first = create();
+  const recreated = create();
+  assert.notEqual(first.id, recreated.id);
+  const agent = { ...first, display_name: "Null" };
+  assert.deepEqual(naming.botIdentity(agent, { editing: null, others: [], agents: [agent], place: "chat" }), first);
+  assert.ok("error" in naming.botIdentity(agent, { editing: null, others: [agent], agents: [agent], place: "chat" }));
 });
