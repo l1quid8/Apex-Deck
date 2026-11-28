@@ -23,11 +23,12 @@ const bridge = `
   export const Capacitor = {getPlatform: () => "ios", isPluginAvailable: () => true};
   window.mounts = [];
   window.disposals = [];
+  window.layouts = [];
   export const registerPlugin = () => ({
     capability: async () => ({enabled:true}),
     mount: async request => {window.mounts.push(request)},
     dispose: async ({runId}) => {window.disposals.push(runId)},
-    layout: async () => {},
+    layout: async request => {window.layouts.push(request)},
     addListener: async (_, cb) => {window.emitCard = cb;return {remove: async () => {}}}
   });
 `;
@@ -55,6 +56,13 @@ async function scenario() {
     assert.equal(await read("mounts.length"), 1, "ordinary rerenders preserve the run");
     await read("emitCard({runId:mounts[0].runId,type:'discuss',text:'Before scroll'})");
     await until("document.querySelector('pre')?.textContent === 'Before scroll'");
+    await read("document.querySelector('main').scrollTop=40");
+    await until("layouts.some(layout => layout.scrollTop === 40)");
+    const [mount, layout] = await read("[mounts[0], layouts.find(layout => layout.scrollTop === 40)]");
+    assert.equal(layout.runId, mount.runId);
+    assert.equal(layout.bounds.y + layout.scrollTop, mount.bounds.y + mount.scrollTop);
+    assert.deepEqual(layout.viewport, mount.viewport);
+    assert.ok(layout.clip.y >= layout.viewport.y);
     await read("document.querySelector('main').scrollTop=900");
     await until("disposals.includes(mounts[0].runId)");
     await read("document.querySelector('main').scrollTop=0");
@@ -99,7 +107,7 @@ test("phone chat disposes hidden or unauthorized cards and accepts discussion on
     });
     const chunk = (Array.isArray(output) ? output[0] : output).output.find(item => item.type === "chunk");
     await writeFile(path.join(temp, "fixture.js"), chunk.code);
-    await writeFile(path.join(temp, "index.html"), '<main class="ph-chat" style="height:420px;overflow:auto"><div id="root"></div><div style="height:1200px"></div></main><script src="fixture.js"></script>');
+    await writeFile(path.join(temp, "index.html"), '<main class="ph-chat" style="height:420px;overflow:auto;scrollbar-width:none"><div id="root"></div><div style="height:1200px"></div></main><script src="fixture.js"></script>');
     const main = path.join(temp, "main.cjs");
     await writeFile(main, "(" + scenario.toString() + ")()");
     const result = await runElectronScenario(electron, main, temp, {attempts:1,timeoutMs:30000});

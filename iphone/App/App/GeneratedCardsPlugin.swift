@@ -41,6 +41,10 @@ private final class WidgetRun {
     let card: [String: Any]
     let clipView = UIView()
     var bounds: CGRect = .zero, clip: CGRect = .zero
+    weak var chatScrollView: UIScrollView?
+    var scrollObservation: NSKeyValueObservation?
+    var viewport: CGRect = .zero
+    var measuredOffset: CGFloat = 0
     var content: WKWebView?
     var childFrame: WKFrameInfo?
     var savedJSON: String?
@@ -196,9 +200,52 @@ final class ApexGeneratedCardsPlugin: CAPPlugin, CAPBridgedPlugin, WKScriptMessa
         return CGRect(x: values[0], y: values[1], width: values[2], height: values[3])
     }
 
-    @MainActor private func position(_ run: WidgetRun, bounds: CGRect, clip: CGRect, in owner: WKWebView) {
-        run.bounds = bounds
-        run.clip = clip
+    // The DOM measures the slot in viewport coordinates, but WebKit can keep
+    // scrolling while that measurement is crossing the Capacitor bridge.
+    @MainActor private func bindScroll(_ run: WidgetRun, call: CAPPluginCall, owner: WKWebView) {
+        guard let viewport = rect(call.options["viewport"]), let offset = call.getDouble("scrollTop"),
+              offset.isFinite else { return }
+        run.viewport = viewport
+        run.measuredOffset = offset
+        func matches(_ scroll: UIScrollView) -> Bool {
+            let frame = scroll.convert(scroll.bounds, to: owner)
+            return scroll.isDescendant(of: owner.scrollView) && scroll !== owner.scrollView
+                && abs(frame.minX - viewport.minX) <= 1 && abs(frame.minY - viewport.minY) <= 1
+                && abs(frame.width - viewport.width) <= 1 && abs(frame.height - viewport.height) <= 1
+                && scroll.contentSize.height > viewport.height
+        }
+        if let scroll = run.chatScrollView, matches(scroll) { return }
+        run.scrollObservation = nil
+        run.chatScrollView = nil
+        var views = owner.scrollView.subviews
+        var match: UIScrollView?
+        while let view = views.popLast() {
+            if let scroll = view as? UIScrollView, matches(scroll) {
+                guard match == nil else { return }
+                match = scroll
+            }
+            views.append(contentsOf: view.subviews)
+        }
+        guard let scroll = match else { return }
+        run.chatScrollView = scroll
+        let update: @MainActor @Sendable () -> Void = { [weak self, weak run, weak owner] in
+            if let self, let run, let owner { self.position(run, in: owner) }
+        }
+        run.scrollObservation = scroll.observe(\.contentOffset, options: [.new]) { _, _ in
+            // Apply UIKit's offset in the same main-thread scroll callback.
+            MainActor.assumeIsolated { update() }
+        }
+    }
+
+    @MainActor private func position(_ run: WidgetRun, in owner: WKWebView) {
+        var bounds = run.bounds
+        var clip = run.clip
+        if let scroll = run.chatScrollView {
+            let delta = run.measuredOffset - scroll.contentOffset.y
+            bounds.origin.y += delta
+            // Move only the region authorized by the most recent DOM hit test.
+            clip = clip.offsetBy(dx: 0, dy: delta).intersection(run.viewport)
+        }
         let visible = owner.bounds.intersection(clip).intersection(bounds)
         guard !visible.isNull, !visible.isEmpty, bounds.width <= 4096, bounds.height <= 800 else {
             run.clipView.frame = .zero
@@ -234,6 +281,7 @@ final class ApexGeneratedCardsPlugin: CAPPlugin, CAPBridgedPlugin, WKScriptMessa
             let run = WidgetRun(id: id, key: key, revision: revision, card: card)
             run.bounds = bounds
             run.clip = clip
+            bindScroll(run, call: call, owner: owner)
             runs[id] = run
 
             do {
@@ -268,7 +316,7 @@ final class ApexGeneratedCardsPlugin: CAPPlugin, CAPBridgedPlugin, WKScriptMessa
                 run.clipView.addGestureRecognizer(pan)
                 owner.addSubview(run.clipView)
                 run.clipView.addSubview(view)
-                position(run, bounds: run.bounds, clip: run.clip, in: owner)
+                position(run, in: owner)
                 let wrapper = template.replacingOccurrences(of: "APEX_NATIVE_RUN_ID", with: id)
                     .replacingOccurrences(of: String(repeating: "0", count: 64), with: revision)
                 log.debug("Loading bundled widget wrapper")
@@ -286,10 +334,17 @@ final class ApexGeneratedCardsPlugin: CAPPlugin, CAPBridgedPlugin, WKScriptMessa
     }
 
     @objc private func scrollChat(_ pan: UIPanGestureRecognizer) {
-        guard pan.state == .changed, let run = runs.values.first(where: { $0.clipView === pan.view }) else { return }
+        guard [.began, .changed, .ended].contains(pan.state), let run = runs.values.first(where: { $0.clipView === pan.view }) else { return }
         let delta = -pan.translation(in: webView).y
         pan.setTranslation(.zero, in: webView)
-        notifyListeners("cardEvent", data: ["runId": run.id, "type": "scroll", "deltaY": delta])
+        if let scroll = run.chatScrollView {
+            let top = -scroll.adjustedContentInset.top
+            let bottom = max(top, scroll.contentSize.height - scroll.bounds.height + scroll.adjustedContentInset.bottom)
+            let y = min(bottom, max(top, scroll.contentOffset.y + delta))
+            scroll.setContentOffset(CGPoint(x: scroll.contentOffset.x, y: y), animated: false)
+        } else {
+            notifyListeners("cardEvent", data: ["runId": run.id, "type": "scroll", "deltaY": delta])
+        }
     }
 
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
@@ -306,7 +361,10 @@ final class ApexGeneratedCardsPlugin: CAPPlugin, CAPBridgedPlugin, WKScriptMessa
             guard let id = call.getString("runId"), let run = self.runs[id], let owner = self.webView,
                   let bounds = self.rect(call.options["bounds"]), let clip = self.rect(call.options["clip"])
             else { return call.reject("Invalid generated card layout.") }
-            self.position(run, bounds: bounds, clip: clip, in: owner)
+            run.bounds = bounds
+            run.clip = clip
+            self.bindScroll(run, call: call, owner: owner)
+            self.position(run, in: owner)
             call.resolve()
         }
     }
@@ -319,6 +377,7 @@ final class ApexGeneratedCardsPlugin: CAPPlugin, CAPBridgedPlugin, WKScriptMessa
     }
 
     private func remove(_ run: WidgetRun, capture: Bool = true, completion: @escaping () -> Void = {}) {
+        run.scrollObservation = nil
         runs.removeValue(forKey: run.id)
         run.clipView.removeFromSuperview()
         guard let view = run.content else { return completion() }

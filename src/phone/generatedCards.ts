@@ -2,7 +2,7 @@ import { Capacitor, registerPlugin, type PluginListenerHandle } from "@capacitor
 import type { GeneratedCard } from "../../shared/generatedCard.mjs";
 
 type Rect = { x: number; y: number; width: number; height: number };
-export type CardGeometry = { bounds: Rect; clip: Rect };
+export type CardGeometry = { bounds: Rect; clip: Rect; viewport: Rect; scrollTop: number };
 type CardEvent = { runId: string; type: "ready" | "resize" | "discuss" | "fault" | "suspended" | "resumed" | "scroll"; deltaY?: number; height?: number; text?: string };
 interface NativeCards {
   capability(): Promise<{ enabled: boolean }>;
@@ -34,5 +34,6 @@ export function cardGeometry(slot: HTMLElement): CardGeometry | null {
   for (const [cx, cy] of [[x, y], [right - 1, y], [x, bottom - 1], [right - 1, bottom - 1], [(x + right) / 2, (y + bottom) / 2]]) {
     if (!slot.contains(document.elementFromPoint(cx, cy))) return null;
   }
-  return { bounds: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }, clip: { x, y, width: right - x, height: bottom - y } };
+  return { bounds: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }, clip: { x, y, width: right - x, height: bottom - y },
+    viewport: { x: viewport.x, y: viewport.y, width: viewport.width, height: viewport.height }, scrollTop: chat.scrollTop };
 }
