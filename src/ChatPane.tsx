@@ -94,6 +94,7 @@ import { afterRound, type Attention, type Signal } from "./attention";
 import { ApprovalCard, type MadeChange } from "./ApprovalCard";
 import { QuestionForm } from "./QuestionForm";
 import { ReplyDecisionCard, useReplyOffer } from "./ReplyDecisionCard";
+import { ReplyNextSteps } from "./ReplyNextSteps";
 import { visibleReply } from "./replyDecision";
 import { CLEAR_BUSY, CLEARED, commandRefusal, imageLabel, imageMessage, unknownCommand } from "./commandRules";
 import { answerText, dismissSteps, formKey, formView, forgetQuestions, questionSignal, questionSnapshot, recordQuestion, restoreRoomQuestions, subscribeQuestions, suggestionHint, type FormView } from "./questions";
@@ -1041,9 +1042,11 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
   const decisionCard = offer?.decision && (pendingMerge || (!busy && decisionSeq !== null)) ?
     <ReplyDecisionCard key={offer.decision.key} offer={offer} backend={backend} room={pane.id} refresh={refreshDecision}
       focused={focused} report={(message, error) => notify(message, error ? "error" : "info")} /> : null;
-  const rawForm = formView(questionState[pane.id]);
+  const inline = offer?.mode === "next_steps";
+  const rawForm = formView(questionState[pane.id], inline ? 3 : 1);
   const allowList = (backend.demo || offer?.mode === "decision_card") && !offer?.decision;
   const form: FormView = rawForm.kind === "steps" && !allowList ? { kind: "none" } : rawForm;
+  const inlineSteps = inline && !offer?.decision && rawForm.kind === "steps" ? rawForm.offer : null;
   const composerForm: FormView = form.kind === "question" ? form : { kind: "none" };
   const [highlighted, setHighlighted] = useState(-1);
   const [formFolded, setFormFolded] = useState(false);
@@ -4066,6 +4069,8 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
                   return <><ChangedFilesStrip files={files} expanded={Boolean(gitMenuRequest && gitCardSeq === entry.message.seq)} onOpenTurn={() => openTurnDiff(entry.message.seq)} />{gitCardSeq === entry.message.seq && <div className="git-changes-slot" ref={setGitCardTarget} />}</>;
                 })()}
                 {entry.message.seq === decisionSeq && decisionCard}
+                {inlineSteps && !busy && lastMessage?.seq === entry.message.seq && inlineSteps.by === entry.message.speaker.id &&
+                  <ReplyNextSteps offer={inlineSteps} onStep={fillStep} />}
               </div>
               {messageActions(entry.message)}
             </div>

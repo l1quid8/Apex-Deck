@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use unicode_general_category::{get_general_category, GeneralCategory};
 
 /// At most this many suggestions are offered.
-pub const MAX_STEPS: usize = 1;
+pub const MAX_STEPS: usize = 3;
 /// A button's label, in characters.
 pub const LABEL_MAX: usize = 48;
 /// The prompt a button sends, in characters.
@@ -29,6 +29,12 @@ try a build on their own device, choose what to work on next, or answer a questi
 could take yourself, such as running tests, committing, pushing, opening or merging a pull request, or fixing something you \
 found. If there is no such step, return an empty list.\n\nAnswer with ONLY a JSON array, no prose, no code fence: \
 [{\"label\": \"<at most 48 characters, shown as the suggestion>\", \"prompt\": \"<full prompt text>\"}]";
+
+pub const ASK_THREE: &str = "Suggest up to three distinct messages the person might send next, in their voice. Only offer decisions or actions that belong to the person. Omit work an agent can do. Return fewer if appropriate, including an empty list. Return only a JSON array of objects with label (up to 48 characters) and prompt (the full message).";
+
+pub fn is_ask(text: &str) -> bool {
+    matches!(text, ASK | ASK_THREE)
+}
 
 /// Match two adjacent words, allowing punctuation between them.
 pub fn has_ship_words(text: &str) -> bool {
@@ -135,6 +141,11 @@ pub fn clean(text: &str, max: usize) -> String {
 /// last `]`, read as a JSON list of `{label, prompt}`. Anything else gives
 /// an empty list.
 pub fn parse(reply: &str) -> Vec<NextStep> {
+    parse_with_limit(reply, 1)
+}
+
+pub fn parse_with_limit(reply: &str, limit: usize) -> Vec<NextStep> {
+    if limit == 0 { return Vec::new(); }
     let (Some(start), Some(end)) = (reply.find('['), reply.rfind(']')) else { return Vec::new() };
     if end <= start { return Vec::new(); }
     let Ok(serde_json::Value::Array(items)) = serde_json::from_str(&reply[start..=end]) else { return Vec::new() };
@@ -146,7 +157,7 @@ pub fn parse(reply: &str) -> Vec<NextStep> {
         let label = item["label"].as_str().map(|l| clean(l, LABEL_MAX)).filter(|l| !l.is_empty()).unwrap_or_else(|| clean(&prompt, LABEL_MAX));
         if has_ship_words(&label) || has_ship_words(&prompt) { continue; }
         steps.push(NextStep { label, prompt });
-        if steps.len() == MAX_STEPS { break; }
+        if steps.len() == limit.min(MAX_STEPS) { break; }
     }
     steps
 }
@@ -160,6 +171,14 @@ mod tests {
         let reply = r#"[{"label":"Commit","prompt":"commit it"},{"label":"Test","prompt":"run the tests"},{"label":"Push","prompt":"push it"},{"label":"More","prompt":"one more"}]"#;
         let steps = parse(reply);
         assert_eq!(steps, vec![NextStep { label: "Commit".into(), prompt: "commit it".into() }]);
+    }
+
+    #[test]
+    fn three_mode_uses_one_recognized_prompt_and_filters_every_choice() {
+        assert!(is_ask(ASK) && is_ask(ASK_THREE) && !is_ask("continue"));
+        let reply = r#"[{"prompt":"One"},{"label":"Ship-it","prompt":"Unsafe"},{"prompt":"Two"},{"prompt":"ship it"},{"prompt":"Three"},{"prompt":"Four"}]"#;
+        let labels: Vec<_> = parse_with_limit(reply, 3).into_iter().map(|step| step.label).collect();
+        assert_eq!(labels, ["One", "Two", "Three"]);
     }
 
     #[test]

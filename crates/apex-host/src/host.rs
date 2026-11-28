@@ -1700,7 +1700,7 @@ impl Host {
         let _chain = Chain::start(&self.chains);
         let client_message_id = batch.client_message_id().map(str::to_owned);
         let error = Mutex::new(None);
-        let batch = batch.with_reply_decisions(self.reply_suggestions.mode() == crate::reply_suggestions::Mode::DecisionCard);
+        let batch = batch.with_reply_decisions(self.reply_suggestions.mode() != crate::reply_suggestions::Mode::Off);
         handle.runtime.run(batch, &self.turn_sink(id, handle, &error)).await;
         if let Some(request_id) = client_message_id.as_deref() {
             // A failed provider-progress save leaves the durable ID owned but
@@ -3895,7 +3895,7 @@ impl Host {
         let busy = handle.busy() || handle.has_open_questions();
         // A room mid-turn holds its own lock; that is "busy", not something to wait on.
         let last = handle.room.try_lock().and_then(|room| room.transcript().last().map(|m| (m.seq, match &m.speaker { apex_core::Speaker::Bot(by) => Some(by.to_string()), _ => None }, m.text.clone())));
-        let card = mode == Mode::DecisionCard && !busy && last.is_some();
+        let card = mode != Mode::Off && !busy && last.is_some();
         let waiting = workflow.as_ref().filter(|w| card && !w.pending());
         // HEAD where the commit is: the builder's task folder, or the thread's own. A folder gone means no card.
         let head = match waiting.map(|w| PathBuf::from(&w.root)).filter(|root| root.is_dir()) {
@@ -6717,6 +6717,23 @@ done
         assert!(wait_for(&seen, |e| matches!(e, RoomEvent::NextSteps { pending: true, .. })).is_some(), "a placeholder first");
         let state = host.room_state("r".into()).unwrap();
         assert_eq!(state["next_steps"]["steps"][0]["prompt"], "I will try it on my phone.");
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn next_steps_mode_delivers_three_choices_from_one_extra_reply() {
+        use crate::reply_suggestions::Mode;
+        let (host, runtime, data) = host("three-next-steps");
+        host.settings_reply_suggestions_set(Mode::NextSteps).unwrap();
+        assert_eq!(Mode::from_settings(host.settings_load().unwrap().as_ref()), Mode::NextSteps);
+        let long = "The build is available to try on your device. Which of the three colors should we use for the next version?";
+        let replies = [long, r#"[{"prompt":"Blue"},{"prompt":"Green"},{"prompt":"Red"}]"#];
+        host.room_create("r".into(), vec![scripted("bot", &replies)], RoomOptions::default(), None).unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        host.events().listen(move |envelope| sink.lock().unwrap().push(envelope.event.clone()));
+        runtime.block_on(Arc::clone(&host).room_post_to("r".into(), "Colors?".into(), vec![ParticipantId::new("bot")])).unwrap();
+        assert!(wait_for(&seen, |e| matches!(e, RoomEvent::NextSteps { pending: false, steps, .. } if steps.len() == 3)).is_some());
         let _ = std::fs::remove_dir_all(data);
     }
 

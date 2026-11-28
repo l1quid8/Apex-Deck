@@ -2589,15 +2589,18 @@ async fn thinking_is_sent_back_with_the_tool_calls_it_led_to() {
 #[tokio::test]
 async fn bots_built_for_text_only_and_the_next_steps_question_get_no_tools() {
     let dir = project("textonly");
-    let (address, sent) = serve_answers(vec![("200 OK", says("a")), ("200 OK", says("b"))]).await;
+    let (address, sent) = serve_answers(vec![("200 OK", says("a")), ("200 OK", says("b")), ("200 OK", says("c"))]).await;
     let plain = OpenAiCompatParticipant::new(config("api", api(address.clone(), None)));
     let _ = ask(&plain, "hi").await;
     let bot = tool_bot(address, &dir, Access::Full);
-    let mut next = request("hi");
-    next.turns.push(ViewTurn { role: Role::User, content: apex_core::next_steps::ASK.to_string() });
-    let _ = bot.respond(next, &|_| {}).await;
+    for prompt in [apex_core::next_steps::ASK, apex_core::next_steps::ASK_THREE] {
+        let mut next = request("hi");
+        next.turns.push(ViewTurn { role: Role::User, content: prompt.to_string() });
+        bot.respond(next, &|_| {}).await.unwrap();
+    }
     let sent = sent.lock().unwrap();
-    assert!(sent[0].get("tools").is_none() && sent[1].get("tools").is_none());
+    assert_eq!(sent.len(), 3);
+    assert!(sent.iter().all(|request| request.get("tools").is_none()));
     assert!(!sent[0]["messages"][0]["content"].as_str().unwrap().contains("tools"));
     let _ = std::fs::remove_dir_all(dir);
 }

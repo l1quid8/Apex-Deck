@@ -31,14 +31,14 @@ const listeners = new Set();
 function changed(){ for (const cb of listeners) cb({replySuggestions:mode}); }
 window.scene = next => {kind=next;changed();};
 window.actions=[];window.expected=[];
-window.steps=()=>recordQuestion('r',{type:'next_steps',id:'bot',steps:[{label:'Measure',prompt:'Measure again'}],pending:false});
+window.steps=()=>recordQuestion('r',{type:'next_steps',id:'bot',steps:[{label:'Measure',prompt:'Measure again'},{label:'Blue',prompt:'I prefer blue'},{label:'Red',prompt:'I prefer red'}],pending:false});
 const backend = {...await getBackend(),demo:false,
   roomState:async()=>({snapshot,active:[],approvals:[],questions:[],mounts:[]}),roomClose:async()=>{},
   onSettingsChanged:async cb=>{listeners.add(cb);return ()=>listeners.delete(cb);},
   call:async(cmd,args)=>{
     if(cmd==='settings_load') return {replySuggestions:mode};
     if(cmd==='settings_reply_suggestions_set'){mode=args.mode;changed();return {mode};}
-    if(cmd==='room_reply_decision') return {mode,replySeq:1,checkout,decision:cards[kind] && (mode==='decision_card'||kind==='merging') ?
+    if(cmd==='room_reply_decision') return {mode,replySeq:1,checkout,decision:cards[kind] && (mode!=='off'||kind==='merging') ?
       {kind,key:kind+'-1',head,turns:['question','fix_checks'].includes(kind)?1:0,dismissible:kind!=='merging',...cards[kind]} : null};
     if(cmd==='room_git_status') return {head,files:[],workflow:{head,...checkout}};
     if(cmd==='room_thread_git_action'){window.actions.push(args.action.kind);window.expected.push(args.action.expected);kind=args.action.kind==='merge_ready'?'merging':'none';return {message:'Action recorded'};}
@@ -52,8 +52,8 @@ export function App(){return <main className="rail" style={{display:'block',widt
   },
 };
 
-test('old Next steps settings read as On and Tab fills the draft through the suggestion handler', () => {
-  assert.equal(suggestionsMode({ replySuggestions: 'next_steps' }), 'decision_card');
+test('Next steps preferences round trip and Tab fills the draft through the suggestion handler', () => {
+  assert.equal(suggestionsMode({ replySuggestions: 'next_steps' }), 'next_steps');
   const source = fs.readFileSync('src/ChatPane.tsx', 'utf8');
   assert.match(source, /formKey\(key, text === "", form, highlighted\)/);
   assert.match(source, /act\.act === "fill" && form\.kind === "steps"\) fillStep\(/);
@@ -104,6 +104,16 @@ test('desktop switches suggestion modes, dispatches once and keeps Cancel access
     assert.equal(await run(hint),false);
     await run('window.scene("none")');
     await until(hint);
+    await choose('next_steps');
+    await until('document.querySelectorAll(".reply-next-step").length===3');
+    assert.equal(await run(hint),false);
+    await key('Tab');
+    assert.equal(await run(input+'.value'),'');
+    assert.equal(await run('document.querySelector(".usage-credit-chip").textContent'),'Usage credits');
+    await shot('desktop-three-suggestions');
+    await choose('decision_card');
+    await until(hint);
+    assert.equal(await run('document.querySelectorAll(".reply-next-step").length'),0);
     await shot('desktop-suggestion-hint');
     await key('Tab');await until(input+'.value==="Measure again"');
     await shot('desktop-suggestion-filled');
