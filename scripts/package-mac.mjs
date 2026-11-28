@@ -71,6 +71,7 @@ export function nightlyBuilderConfig(baseConfig, { target = activeChannel, build
   config.productName = target.PRODUCT;
   config.mac = {
     ...config.mac,
+    icon: 'build/icons/nightly.icns',
     bundleVersion: String(buildNumber),
     extendInfo: {
       ...(config.mac?.extendInfo ?? {}),
