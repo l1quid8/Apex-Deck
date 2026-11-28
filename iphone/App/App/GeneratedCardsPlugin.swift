@@ -243,8 +243,9 @@ final class ApexGeneratedCardsPlugin: CAPPlugin, CAPBridgedPlugin, WKScriptMessa
         if let scroll = run.chatScrollView {
             let delta = run.measuredOffset - scroll.contentOffset.y
             bounds.origin.y += delta
-            // Move only the region authorized by the most recent DOM hit test.
-            clip = clip.offsetBy(dx: 0, dy: delta).intersection(run.viewport)
+            // Keep both the authorized card pixels and the authorized screen
+            // region. A scroll must not uncover pixels over a floating control.
+            clip = clip.offsetBy(dx: 0, dy: delta).intersection(run.clip).intersection(run.viewport)
         }
         let visible = owner.bounds.intersection(clip).intersection(bounds)
         guard !visible.isNull, !visible.isEmpty, bounds.width <= 4096, bounds.height <= 800 else {
