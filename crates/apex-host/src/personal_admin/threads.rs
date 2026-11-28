@@ -40,7 +40,7 @@ impl Host {
         Ok(ids)
     }
 
-    fn admin_folder(&self, owner: &str, requested: Option<&str>) -> Result<String, String> {
+    fn admin_thread_project(&self, owner: &str, requested: Option<&str>, project: Option<&crate::personal_workspace::ProjectRef>) -> Result<crate::personal_workspace::ProjectRef, String> {
         let assistant = self.personal_get(owner)?;
         let requested = requested
             .map(std::fs::canonicalize)
@@ -51,6 +51,7 @@ impl Host {
             .iter()
             .filter(|b| b.tools != crate::personal_workspace::ProjectTools::Off)
             .filter_map(|b| self.validate_project_binding(&assistant, b.clone()).ok())
+            .filter(|b| project.is_none_or(|project| project == &b.project))
             .filter(|b| {
                 requested
                     .as_ref()
@@ -65,7 +66,7 @@ impl Host {
                 "This project requires approval. Use its existing thread creation request.".into(),
             );
         }
-        Ok(chosen.project.cwd)
+        Ok(chosen.project)
     }
 
     pub(crate) fn admin_agent(&self, agent: &Value) -> Result<ParticipantConfig, String> {
@@ -140,11 +141,13 @@ impl Host {
                         .unwrap_or(json!(RoomOptions::default())),
                 )
                 .map_err(|e| e.to_string())?;
-                let cwd = Some(self.admin_folder(owner, args["cwd"].as_str())?);
-                if kind.is_chat() && cwd.is_some() {
+                if kind.is_chat() && !args["cwd"].is_null() {
                     return Err("Chat threads do not have a working folder".into());
                 }
-                let snapshot = self.room_open_with_kind(id.clone(), kind, agents, options, cwd.clone(), false, true)?;
+                let requested_project: Option<crate::personal_workspace::ProjectRef> = serde_json::from_value(args["project"].clone()).map_err(|e| e.to_string())?;
+                let project = self.admin_thread_project(owner, args["cwd"].as_str(), requested_project.as_ref())?;
+                let cwd = (!kind.is_chat()).then(|| project.cwd.clone());
+                let snapshot = self.room_open_with_kind(id.clone(), kind, agents, options, cwd.clone(), false, true, kind.is_chat().then_some(project))?;
                 // Creation is already durable. Report follow-up failures individually.
                 self.emit(HostEvent::ThreadCatalogChanged {});
                 match self.chat_update_meta(

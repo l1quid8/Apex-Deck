@@ -91,10 +91,11 @@ impl Responsibility {
             let Some((kind, excerpt)) = classify_report(message) else {
                 continue;
             };
+            let evidence: String = message.text.chars().take(1601).collect();
             if worker
                 .report
                 .as_ref()
-                .is_some_and(|old| old.kind == kind && old.excerpt.eq_ignore_ascii_case(&excerpt))
+                .is_some_and(|old| old.kind == kind && old.evidence.as_deref().is_some_and(|text| text.eq_ignore_ascii_case(&evidence)))
             {
                 continue;
             }
@@ -102,6 +103,7 @@ impl Responsibility {
                 seq,
                 kind,
                 excerpt,
+                evidence: Some(evidence),
                 question_posted: false,
             };
             match kind {
@@ -109,15 +111,17 @@ impl Responsibility {
                     if let Some(open) = worker
                         .open_risks
                         .iter_mut()
-                        .find(|open| same_issue(&open.excerpt, &report.excerpt))
+                        .find(|open| same_issue(open.evidence.as_deref().unwrap_or(&open.excerpt), report.evidence.as_deref().unwrap_or(&report.excerpt)))
                     {
                         // Retain the evidence ID bound to the existing question.
                         open.excerpt = report.excerpt.clone();
+                        open.evidence = report.evidence.clone();
                     } else if worker.open_risks.len() < 32 {
                         worker.open_risks.push(report.clone());
                     } else if !worker.open_risks.iter().any(|r| r.excerpt == OVERFLOW) {
                         worker.open_risks.push(WorkerReport {
                             excerpt: OVERFLOW.into(),
+                            evidence: None,
                             ..report.clone()
                         });
                     }
@@ -127,7 +131,7 @@ impl Responsibility {
                     // cannot clear this worker's outstanding issues.
                     let single = worker.open_risks.len() == 1;
                     worker.open_risks.retain(|open| {
-                        !explicit_resolution(&open.excerpt, &report.excerpt, single)
+                        !explicit_resolution(open.evidence.as_deref().unwrap_or(&open.excerpt), report.evidence.as_deref().unwrap_or(&report.excerpt), single)
                     });
                 }
                 ReportKind::Progress => {}
@@ -275,11 +279,59 @@ fn same_issue(old: &str, new: &str) -> bool {
     !old.is_empty() && old == new
 }
 
+const RISK_CUES: &[&str] = &[
+        "at risk",
+        "waiting for",
+        "waiting on",
+        "still need",
+        "not yet",
+        "not passed",
+        "not resolved",
+        "not received",
+        "not valid",
+        "not accepted",
+        "not verified",
+        "hasn't arrived",
+        "hasn't passed",
+        "haven't received",
+        "has not arrived",
+        "no receipt",
+        "cannot verify",
+    ];
+const RISK_WORDS: &[&str] = &[
+        "blocked",
+        "blocker",
+        "missing",
+        "failed",
+        "failing",
+        "overdue",
+        "broken",
+        "unresolved",
+        "invalid",
+        "rejected",
+        "unsigned",
+        "expired",
+        "incorrect",
+    ];
+
 // Only report a worker's attributed statement. No text from the room becomes
 // a command, assistant instruction, address or grant.
 fn classify_report(message: &Message) -> Option<(ReportKind, String)> {
-    let line = message
-        .text
+    classify_text(&message.text)
+}
+
+fn classify_text(text: &str) -> Option<(ReportKind, String)> {
+    let (kind, excerpt) = classify_clause(text)?;
+    // A hypothetical or interrogative first sentence does not qualify an
+    // independent assertion later in the same saved worker report.
+    let bounded: String = text.chars().take(1600).collect();
+    let asserted_risk = bounded.split_inclusive(['.', '?', '!', ';', '\n'])
+        .any(|clause| matches!(classify_clause(clause.trim()), Some((ReportKind::Risk, _))));
+    Some((if asserted_risk { ReportKind::Risk } else if kind == ReportKind::Risk { ReportKind::Progress } else { kind }, excerpt))
+}
+
+fn classify_clause(text: &str) -> Option<(ReportKind, String)> {
+    let line = text
         .chars()
         .take(1600)
         .collect::<String>()
@@ -307,40 +359,6 @@ fn classify_report(message: &Message) -> Option<(ReportKind, String)> {
         .replace("blocker is cleared", "unblocked")
         .replace("no outstanding blockers", "clear");
     let words: Vec<_> = status.split(|c: char| !c.is_alphanumeric()).collect();
-    let risk_cues = [
-        "at risk",
-        "waiting for",
-        "waiting on",
-        "still need",
-        "not yet",
-        "not passed",
-        "not resolved",
-        "not received",
-        "not valid",
-        "not accepted",
-        "not verified",
-        "hasn't arrived",
-        "hasn't passed",
-        "haven't received",
-        "has not arrived",
-        "no receipt",
-        "cannot verify",
-    ];
-    let risk_words = [
-        "blocked",
-        "blocker",
-        "missing",
-        "failed",
-        "failing",
-        "overdue",
-        "broken",
-        "unresolved",
-        "invalid",
-        "rejected",
-        "unsigned",
-        "expired",
-        "incorrect",
-    ];
     let positive_words = [
         "passed",
         "unblocked",
@@ -353,14 +371,14 @@ fn classify_report(message: &Message) -> Option<(ReportKind, String)> {
     ];
     let kind = if status.starts_with("what if ")
         || status.starts_with("if ")
-        || line.ends_with('?') && !line.contains('.')
+        || line.ends_with('?') && words.first().is_some_and(|word| ["is", "are", "was", "were", "has", "have", "did", "does", "do", "can", "could", "would", "should", "what", "why", "when", "where", "who", "how"].contains(word))
     {
         ReportKind::Progress
-    } else if words.iter().any(|w| risk_words.contains(w))
-        || risk_cues.iter().any(|s| status.contains(s))
+    } else if words.iter().any(|w| RISK_WORDS.contains(w))
+        || RISK_CUES.iter().any(|s| status.contains(s))
     {
         ReportKind::Risk
-    } else if words.iter().any(|w| {
+    } else if line.ends_with('?') || words.iter().any(|w| {
         [
             "if",
             "unless",
@@ -398,6 +416,30 @@ fn classify_report(message: &Message) -> Option<(ReportKind, String)> {
 // blocker or ties a positive result to the same evidence. An unrelated passing
 // check (or a worker acknowledging our request) leaves the decision intact.
 fn explicit_resolution(previous: &str, update: &str, single: bool) -> bool {
+    // Never infer full resolution from a truncated quote or bounded capture.
+    if previous.ends_with('…') || previous.chars().count() > 1600 || update.chars().count() > 1600 {
+        return false;
+    }
+    // A mixed update cannot declare a global all-clear while reporting a new risk.
+    if !matches!(classify_text(update), Some((ReportKind::Clear, _))) {
+        return false;
+    }
+    let normalized = update.to_lowercase();
+    if (normalized.contains("no outstanding blockers") || normalized.contains("no blockers remain"))
+        && resolves_clause(previous, update, false)
+    {
+        return true;
+    }
+    let separated = previous.replace(" and ", ".").replace(" plus ", ".");
+    let risks: Vec<_> = separated.split(['.', ';', ',', '!', '?', '\n', '•', '—'])
+        .filter(|clause| matches!(classify_text(clause), Some((ReportKind::Risk, _))))
+        .collect();
+    !risks.is_empty() && risks.iter().all(|risk| {
+        resolves_clause(risk.trim(), update, single && risks.len() == 1)
+    })
+}
+
+fn resolves_clause(previous: &str, update: &str, single: bool) -> bool {
     let update = update.to_lowercase().replace('’', "'");
     let words: Vec<_> = update.split(|c: char| !c.is_alphanumeric()).collect();
     // Mixed, conditional, or negated reports can describe a partial fix. Only
@@ -449,10 +491,15 @@ fn explicit_resolution(previous: &str, update: &str, single: bool) -> bool {
         "no outstanding blockers",
         "no blockers remain",
     ];
-    if single && cleared.iter().any(|phrase| update.contains(phrase))
-        || update.contains("no outstanding blockers")
-        || update.contains("no blockers remain")
-    {
+    if update.contains("no outstanding blockers") || update.contains("no blockers remain") {
+        return true;
+    }
+    let adverse = previous.to_lowercase();
+    let indicators = adverse.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| RISK_WORDS.contains(w)).count()
+        + RISK_CUES.iter().map(|cue| adverse.matches(cue).count()).sum::<usize>();
+    if indicators > 1 { return false; }
+    if single && cleared.iter().any(|phrase| update.contains(phrase)) {
         return true;
     }
     // A receipt can arrive after an installer test has already passed. Require
@@ -492,8 +539,8 @@ fn explicit_resolution(previous: &str, update: &str, single: bool) -> bool {
     // followed by "Windows passed"). Require the same named subject.
     for failure in [" failed", " is failing"] {
         if let Some((subject, _)) = previous.split_once(failure) {
-            let subject = subject.trim();
-            return !subject.is_empty() && update.starts_with(&format!("{subject} passed"));
+            let subject = subject.trim().trim_start_matches("but ").trim_start_matches("the ");
+            return !subject.is_empty() && update.split(['.', ';', '\n']).any(|clause| clause.trim().trim_start_matches("the ").starts_with(&format!("{subject} passed")));
         }
     }
     false

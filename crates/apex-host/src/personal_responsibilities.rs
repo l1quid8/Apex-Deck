@@ -68,6 +68,10 @@ struct WorkerReport {
     seq: usize,
     kind: ReportKind,
     excerpt: String,
+    /// Full bounded evidence for resolution, separate from the short UI quote.
+    /// Older records fall back conservatively to their retained excerpt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    evidence: Option<String>,
     question_posted: bool,
 }
 

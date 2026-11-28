@@ -222,7 +222,12 @@ impl Host {
                 // ordinary operation may touch it until restoration.
 
                 let path = saved.cwd.as_deref().and_then(|cwd| std::path::Path::new(cwd).canonicalize().ok());
-                if path.as_deref() != Some(std::path::Path::new(&checked.project.cwd)) { continue }
+                let in_project = if saved.snapshot.kind.is_chat() && saved.cwd.is_none() {
+                    reader.assistant_project(&thread)?.as_ref() == Some(&checked.project)
+                } else {
+                    path.as_deref() == Some(std::path::Path::new(&checked.project.cwd))
+                };
+                if !in_project { continue }
                 let workers: Vec<_> = saved.snapshot.participants.iter().filter(|p| crate::assistant_service::task_worker_eligible(p))
                     .map(|p| (p.id.to_string(), p.display_name.clone())).collect();
 
@@ -311,13 +316,20 @@ impl Host {
         let bindings: Vec<_> = assistant.projects.iter().filter(|binding| binding.tools != ProjectTools::Off)
             .filter_map(|binding| self.validate_project_binding(assistant, binding.clone()).ok()).collect();
         if bindings.is_empty() { return Err(unavailable()); }
-        let meta = self.store().chat_meta(thread)?;
+        let store = self.store();
+        let reader = store.room_reader()?;
+        let meta = reader.meta(thread).cloned();
         if !allow_archived && meta.as_ref().is_some_and(|meta| meta.archived) { return Err(unavailable()); }
         // Exact actions need the selected room's fresh protected authority,
         // not every transcript and authority manifest in the discovery catalog.
-        let saved = self.store().room(thread)?.ok_or_else(unavailable)?;
-        let cwd = saved.cwd.as_deref().and_then(|cwd| std::path::Path::new(cwd).canonicalize().ok()).ok_or_else(unavailable)?;
-        let binding = bindings.into_iter().find(|binding| cwd == std::path::Path::new(&binding.project.cwd)).ok_or_else(unavailable)?;
+        let saved = reader.room(thread)?.ok_or_else(unavailable)?;
+        let binding = if saved.snapshot.kind.is_chat() && saved.cwd.is_none() {
+            let project = reader.assistant_project(thread)?.ok_or_else(unavailable)?;
+            bindings.into_iter().find(|binding| binding.project == project)
+        } else {
+            let cwd = saved.cwd.as_deref().and_then(|cwd| std::path::Path::new(cwd).canonicalize().ok()).ok_or_else(unavailable)?;
+            bindings.into_iter().find(|binding| cwd == std::path::Path::new(&binding.project.cwd))
+        }.ok_or_else(unavailable)?;
         let title = meta.map(|meta| meta.title).filter(|title| !title.trim().is_empty()).or_else(|| {
             panes.into_iter().flatten().filter(|pane| pane["kind"] == "chat" && pane["archived"] != true && pane["id"].as_str() == Some(thread))
                 .filter_map(|pane| pane["title"].as_str().map(str::trim)).filter(|title| !title.is_empty()).last().map(str::to_owned)

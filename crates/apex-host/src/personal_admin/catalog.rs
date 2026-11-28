@@ -23,7 +23,7 @@ arguments!(Id { id: String });
 arguments!(Profile {
     profile: ParticipantConfig
 });
-arguments!(Create{id:Option<String>,title:Option<String>,cwd:Option<String>,kind:Option<RoomKind>,agents:Option<Vec<Agent>>,options:Option<RoomOptions>,initial_message:Option<String>,open_in_ui:Option<bool>});
+arguments!(Create{id:Option<String>,title:Option<String>,cwd:Option<String>,project:Option<ProjectRef>,kind:Option<RoomKind>,agents:Option<Vec<Agent>>,options:Option<RoomOptions>,initial_message:Option<String>,open_in_ui:Option<bool>});
 arguments!(Options {
     id: String,
     options: RoomOptions

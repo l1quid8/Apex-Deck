@@ -169,6 +169,12 @@ async fn duplicate_reports_and_restarts_keep_one_scoped_decision() {
         8100,
     )]);
     f.tick(12_000);
+    // The receipt result alone cannot prove the separately reported signing
+    // blocker was its only consequence. Retain ambiguous mixed evidence.
+    assert!(f.assistant.responsibilities[0].decision.is_some());
+    assert_eq!(f.assistant.messages.len(), 1);
+    f.report(vec![worker(9, "maya", "No outstanding blockers remain.", 12_100)]);
+    f.tick(16_000);
     assert!(f.assistant.responsibilities[0].decision.is_none());
     assert_eq!(f.assistant.messages.len(), 2);
     let visible = serde_json::to_value(PersonalAssistantView::from(&f.assistant)).unwrap();
@@ -304,4 +310,139 @@ async fn waiting_on_one_blocker_still_surfaces_a_second_issue_from_the_same_work
     assert_eq!(f.assistant.messages.len(), 3);
     assert!(f.assistant.messages.last().unwrap().text.contains("Mac security scan failed"));
     assert_eq!(f.assistant.responsibilities[0].decision.as_ref().unwrap().status, DecisionStatus::Pending);
+}
+
+#[tokio::test]
+async fn asserted_blockers_with_questions_are_surfaced() {
+    for (name, text) in [
+        ("question-semicolon", "Signing is blocked; can someone send the missing receipt?"),
+        ("question-dash", "The signing receipt is missing—can someone send it?"),
+        ("question-comma", "The Windows check failed, can someone investigate?"),
+    ] {
+        let mut f = Fixture::new(name);
+        f.start(100_000);
+        f.report(vec![worker(0, "maya", text, 20)]);
+        f.tick(100);
+        assert!(f.assistant.responsibilities[0].decision.is_some(), "{text}");
+        assert!(f.assistant.messages[0].text.contains(text));
+    }
+}
+
+#[tokio::test]
+async fn hypothetical_and_interrogative_risks_do_not_assert_blockers() {
+    let mut f = Fixture::new("hypothetical-risks");
+    f.start(100_000);
+    for (seq, text) in ["Is signing blocked?", "Is signing blocked? I will ask QA.", "What if the receipt is missing?", "If the Windows check failed, we would investigate."].iter().enumerate() {
+        f.report(vec![worker(seq, "maya", text, 20 + seq as u64)]);
+        f.tick(100 + seq as u64);
+    }
+    assert!(f.assistant.messages.is_empty());
+}
+
+#[tokio::test]
+async fn receipt_arrival_does_not_clear_a_mixed_risk_after_restart() {
+    for (name, text) in [
+        ("mixed-sentences", "The signing receipt is missing. Windows security scan failed.".to_owned()),
+        ("mixed-conjunction", "The signing receipt is missing and Windows security scan failed.".to_owned()),
+        ("mixed-comma", "The signing receipt is missing, Windows security scan failed.".to_owned()),
+        ("mixed-plus", "The signing receipt is missing plus Windows security scan failed.".to_owned()),
+        ("mixed-long", format!("The signing receipt is missing. {} Windows security scan failed.", "More background detail. ".repeat(15))),
+    ] {
+        let mut f = Fixture::new(name);
+        f.start(100_000);
+        f.report(vec![worker(0, "maya", &text, 20)]);
+        f.tick(100);
+        f.assistant = serde_json::from_slice(&serde_json::to_vec(&f.assistant).unwrap()).unwrap();
+        f.report(vec![worker(1, "maya", "The signing receipt arrived.", 200)]);
+        f.tick(300);
+        assert!(f.assistant.responsibilities[0].decision.is_some(), "{name}: another risk remains");
+        assert_eq!(f.assistant.messages.len(), 1, "{name}: no false clearance");
+        f.tick(100_000);
+        let summary = &f.assistant.messages.last().unwrap().text;
+        assert!(summary.contains("outstanding blocker"), "{name}: {summary}");
+        assert!(!summary.contains("no outstanding risk"));
+    }
+}
+
+#[tokio::test]
+async fn explicit_global_clearance_resolves_a_mixed_report() {
+    let mut f = Fixture::new("mixed-global-clear");
+    f.start(100_000);
+    f.report(vec![worker(0, "maya", "The signing receipt is missing. Windows security scan failed.", 20)]);
+    f.tick(100);
+    f.report(vec![worker(1, "maya", "No outstanding blockers remain.", 200)]);
+    f.tick(300);
+    assert!(f.assistant.responsibilities[0].decision.is_none());
+}
+
+#[tokio::test]
+async fn all_named_results_can_clear_mixed_evidence_but_new_risks_cannot() {
+    let mut f = Fixture::new("mixed-named-results");
+    f.start(100_000);
+    f.report(vec![worker(0, "maya", "The signing receipt is missing. Windows security scan failed.", 20)]);
+    f.tick(100);
+    f.report(vec![worker(1, "maya", "No outstanding blockers, but Windows security scan failed.", 200)]);
+    f.tick(300);
+    assert!(f.assistant.responsibilities[0].decision.is_some());
+    f.report(vec![worker(2, "maya", "The signing receipt arrived. Windows security scan passed.", 400)]);
+    f.tick(500);
+    assert!(f.assistant.responsibilities[0].decision.is_none());
+}
+
+#[tokio::test]
+async fn truncated_risk_evidence_cannot_be_cleared_by_one_artifact() {
+    for (name, legacy) in [("bounded-evidence", false), ("legacy-excerpt", true)] {
+        let mut f = Fixture::new(name);
+        f.start(100_000);
+        let text = format!("The signing receipt is missing. {} Windows security scan failed.", "Background. ".repeat(160));
+        f.report(vec![worker(0, "maya", &text, 20)]);
+        f.tick(100);
+        if legacy {
+            let mut value = serde_json::to_value(&f.assistant).unwrap();
+            value["responsibilities"][0]["workers"]["maya"]["openRisks"][0].as_object_mut().unwrap().remove("evidence");
+            f.assistant = serde_json::from_value(value).unwrap();
+        }
+        f.report(vec![worker(1, "maya", "The signing receipt arrived.", 200)]);
+        f.tick(300);
+        assert!(f.assistant.responsibilities[0].decision.is_some(), "{name}");
+    }
+}
+
+#[tokio::test]
+async fn introductory_questions_do_not_hide_later_asserted_risks() {
+    for (name, text) in [
+        ("question-first", "Can you check the receipt? Windows security scan failed. Should we stop?"),
+        ("hypothetical-first", "What if we delay? Windows security scan failed."),
+    ] {
+        let mut f = Fixture::new(name);
+        f.start(100_000);
+        f.report(vec![worker(0, "maya", text, 20)]);
+        f.tick(100);
+        assert!(f.assistant.responsibilities[0].decision.is_some(), "{text}");
+    }
+}
+
+#[tokio::test]
+async fn receipt_updates_do_not_clear_unseparated_risk_cues() {
+    let mut f = Fixture::new("mixed-cue");
+    f.start(100_000);
+    f.report(vec![worker(0, "maya", "The signing receipt is missing while Windows security has not passed.", 20)]);
+    f.tick(100);
+    f.report(vec![worker(1, "maya", "The signing receipt arrived.", 200)]);
+    f.tick(300);
+    assert!(f.assistant.responsibilities[0].decision.is_some());
+}
+
+#[tokio::test]
+async fn named_check_updates_do_not_clear_other_unseparated_checks() {
+    let mut f = Fixture::new("mixed-named-cue");
+    f.start(100_000);
+    f.report(vec![worker(0, "maya", "Windows failed while Mac security has not passed.", 20)]);
+    f.tick(100);
+    f.report(vec![worker(1, "maya", "Windows passed.", 200)]);
+    f.tick(300);
+    assert!(f.assistant.responsibilities[0].decision.is_some());
+    f.report(vec![worker(2, "maya", "The blocker is resolved.", 400)]);
+    f.tick(500);
+    assert!(f.assistant.responsibilities[0].decision.is_some());
 }

@@ -1121,6 +1121,7 @@ impl Host {
             None,
             false,
             false,
+            None,
         )?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1219,7 +1220,7 @@ impl Host {
 
     /// A read may attach to saved authority, but cannot create a new manifest.
     fn room_open(self: &Arc<Self>, id: String, participants: Vec<ParticipantConfig>, options: RoomOptions, cwd: Option<String>, saved_only: bool) -> Result<RoomSnapshot, String> {
-        self.room_open_with_kind(id, apex_core::RoomKind::Work, participants, options, cwd, saved_only, false)
+        self.room_open_with_kind(id, apex_core::RoomKind::Work, participants, options, cwd, saved_only, false, None)
     }
 
     pub(crate) fn room_open_with_kind(
@@ -1231,7 +1232,11 @@ impl Host {
         cwd: Option<String>,
         saved_only: bool,
         create_only: bool,
+        chat_project: Option<crate::personal_workspace::ProjectRef>,
     ) -> Result<RoomSnapshot, String> {
+        if chat_project.is_some() && (!create_only || !default_kind.is_chat()) {
+            return Err("A chat project can only be assigned when creating a talk-only thread.".into());
+        }
         let _lifecycle = self.room_lifecycle.lock().unwrap();
         self.store.require_room_not_deleted(&id)?;
         if create_only && (self.store.room(&id)?.is_some() || self.rooms.lock().unwrap().contains_key(&id)) {
@@ -1342,7 +1347,7 @@ impl Host {
             std::thread::spawn(move || { let _maintenance = maintenance; let _ = snapshots.take_if_live(&thread, &cwd, seq, checkpoints::Kind::Open, None, &retired); });
         }
         let journal = if kind.is_chat() { None } else { Some(crate::journal::path_for(&self.paths.data.join("attachments"), &id)?) };
-        if let Err(error) = self.store.save_room(&id, &SavedRoom { mounts: mounts.clone(), cwd: context.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()), snapshot: snapshot.clone() }) {
+        if let Err(error) = self.store.save_room_with_chat_project(&id, &SavedRoom { mounts: mounts.clone(), cwd: context.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()), snapshot: snapshot.clone() }, chat_project) {
             return Err(invalidate_journal(&mut room, journal.as_deref(), error));
         }
         let journal_warning = sync_journal(&mut room, journal.as_deref(), &snapshot);

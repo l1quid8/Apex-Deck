@@ -90,6 +90,9 @@ pub(crate) fn created_room_signature(cwd: Option<&str>, snapshot: &RoomSnapshot,
 /// Permission-bearing snapshot fields live separately from editable transcript data.
 #[derive(Clone,Serialize,Deserialize)]
 struct RoomAuthority {
+    /// Administrative scope, independent of a talk-only chat's absent cwd.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    assistant_project: Option<crate::personal_workspace::ProjectRef>,
     #[serde(default, skip_serializing_if = "apex_core::RoomKind::is_work")]
     kind: apex_core::RoomKind,
     cwd:Option<String>,participants:Vec<apex_core::ParticipantConfig>,options:apex_core::RoomOptions,
@@ -716,9 +719,9 @@ impl Store {
     }
 
     fn save_room_authority(&self,id:&str,room:&SavedRoom)->Result<(),String>{
-        self.save_room_authority_held(id, room, self.room_authorities()?)
+        self.save_room_authority_held(id, room, self.room_authorities()?, None)
     }
-    fn save_room_authority_held(&self,id:&str,room:&SavedRoom,mut authorities:serde_json::Map<String,serde_json::Value>)->Result<(),String>{
+    fn save_room_authority_held(&self,id:&str,room:&SavedRoom,mut authorities:serde_json::Map<String,serde_json::Value>,assistant_project:Option<crate::personal_workspace::ProjectRef>)->Result<(),String>{
         if let Some(existing) = authorities.get(id) {
             let previous_kind: apex_core::RoomKind = existing.get("kind").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
             if previous_kind.is_chat() && !room.snapshot.kind.is_chat() {
@@ -727,7 +730,7 @@ impl Store {
         }
         // A room restored from legacy data keeps saying so after later saves.
         let legacy=authorities.get(id).and_then(|entry|entry.get("legacy")).and_then(|marker|serde_json::from_value(marker.clone()).ok());
-        let manifest=RoomAuthority{kind:room.snapshot.kind,cwd:room.cwd.clone(),participants:room.snapshot.participants.clone(),options:room.snapshot.options.clone(),allowed:room.snapshot.allowed.clone(),plan:room.snapshot.plan,mounts:room.mounts.clone(),legacy};
+        let manifest=RoomAuthority{assistant_project,kind:room.snapshot.kind,cwd:room.cwd.clone(),participants:room.snapshot.participants.clone(),options:room.snapshot.options.clone(),allowed:room.snapshot.allowed.clone(),plan:room.snapshot.plan,mounts:room.mounts.clone(),legacy};
         let manifest = serde_json::to_value(manifest).map_err(|e|e.to_string())?;
         // Usage, messages and file changes do not change permissions. Avoid
         // rewriting the entire protected ledger on every streamed checkpoint.
@@ -802,6 +805,16 @@ impl Store {
     }
 
     pub fn save_room(&self, id: &str, room: &SavedRoom) -> Result<(), String> {
+        self.save_room_with_chat_project(id, room, None)
+    }
+
+    /// Create an admin chat's scope in the same protected manifest transaction
+    /// as its kind/permissions. Ordinary saves preserve that scope; explicit
+    /// imports and forks write a fresh manifest without inheriting it.
+    pub(crate) fn save_room_with_chat_project(&self, id: &str, room: &SavedRoom, project: Option<crate::personal_workspace::ProjectRef>) -> Result<(), String> {
+        if project.is_some() && (!room.snapshot.kind.is_chat() || room.cwd.is_some()) {
+            return Err("Only a talk-only chat can have an administrative project.".into());
+        }
         let _guard = self.writes.lock().unwrap();
         self.require_room_not_deleted(id)?;
         // Invariant: the manifest never claims permissions the saved room didn't get.
@@ -818,6 +831,11 @@ impl Store {
         // One fresh broker read for this transaction, shared by validation and
         // the eventual permission update. Never cache authority across saves.
         let authorities = self.room_authorities()?;
+        let assistant_project = if before.is_some() {
+            if project.is_some() { return Err("An existing chat cannot be assigned a new administrative project.".into()); }
+            authorities.get(id).and_then(|entry| entry.get("assistant_project")).cloned()
+                .map(serde_json::from_value).transpose().map_err(|e| format!("Invalid room project: {e}"))?.flatten()
+        } else { project };
         let previous = match &before {
             Some(bytes) => {
                 let saved = serde_json::from_slice(bytes).map_err(|e| format!("Could not read saved data: {e}"))?;
@@ -830,7 +848,7 @@ impl Store {
             return Err("Injected room save failure.".into());
         }
         self.write_held(&room_path, room)?;
-        if let Err(why) = self.save_room_authority_held(id,room,authorities) {
+        if let Err(why) = self.save_room_authority_held(id,room,authorities,assistant_project) {
             let restored = match &before {
                 Some(bytes) => self.write_bytes_held(&room_path, bytes),
                 None => std::fs::remove_file(&room_path).map_err(|e| e.to_string()),
@@ -1573,7 +1591,7 @@ pub(crate) fn plan_legacy_room(id: &str, bytes: &[u8]) -> Result<(LegacyRoom, us
         }
         true
     });
-    let authority = RoomAuthority { kind: apex_core::RoomKind::Work, cwd: saved.cwd, participants: saved.snapshot.participants, options: saved.snapshot.options, allowed: vec![], plan: saved.snapshot.plan, mounts, legacy: None };
+    let authority = RoomAuthority { assistant_project: None, kind: apex_core::RoomKind::Work, cwd: saved.cwd, participants: saved.snapshot.participants, options: saved.snapshot.options, allowed: vec![], plan: saved.snapshot.plan, mounts, legacy: None };
     Ok((LegacyRoom { id: id.into(), authority, omitted_commands }, allowed, dropped))
 }
 
@@ -1587,6 +1605,11 @@ pub(crate) struct RoomReader<'a> {
 }
 
 impl RoomReader<'_> {
+    pub(crate) fn assistant_project(&self, id: &str) -> Result<Option<crate::personal_workspace::ProjectRef>, String> {
+        self.authority.get(id).and_then(|entry| entry.get("assistant_project")).cloned()
+            .map(serde_json::from_value).transpose().map_err(|e| format!("Invalid room project: {e}")).map(Option::flatten)
+    }
+
     /// Same result as `Store::room`, without rereading the manifest.
     pub(crate) fn room(&self, id: &str) -> Result<Option<SavedRoom>, String> {
         let Some(room): Option<SavedRoom> = self.store.read(&self.store.room_path(id))? else { return Ok(None) };
@@ -1744,6 +1767,26 @@ mod tests {
     }
 
     #[test]
+    fn admin_chat_scope_survives_saves_but_is_not_inherited_by_forks_or_imports() {
+        let root = temp();
+        let store = Store::new(root.clone());
+        let project = crate::personal_workspace::ProjectRef { host_id: "home".into(), workspace_id: "project".into(), cwd: "/project".into() };
+        let saved = SavedRoom { cwd: None, mounts: vec![], snapshot: Room::new(vec![], RoomOptions::default()).with_kind(apex_core::RoomKind::Chat).snapshot() };
+        store.save_room_with_chat_project("owned", &saved, Some(project.clone())).unwrap();
+        store.save_room("owned", &saved).unwrap();
+        assert_eq!(store.room_reader().unwrap().assistant_project("owned").unwrap(), Some(project.clone()));
+        let different = crate::personal_workspace::ProjectRef { workspace_id: "other".into(), ..project.clone() };
+        assert!(store.save_room_with_chat_project("owned", &saved, Some(different)).is_err());
+        store.fork_room("owned", "forked", None, None).unwrap();
+        store.import_room("imported", &saved).unwrap();
+        let reader = store.room_reader().unwrap();
+        assert_eq!(reader.assistant_project("owned").unwrap(), Some(project));
+        assert!(reader.assistant_project("forked").unwrap().is_none());
+        assert!(reader.assistant_project("imported").unwrap().is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn oversized_room_import_preserves_previous_protected_bytes() {
         let root = temp();
         let store = Store::new(root.clone());
@@ -1753,6 +1796,7 @@ mod tests {
         let room = LegacyRoom {
             id: "new".into(),
             authority: RoomAuthority {
+                assistant_project: None,
                 kind: apex_core::RoomKind::Work,
                 cwd: Some("x".repeat(crate::legacy_import::DOCUMENT_BUDGET)),
                 participants: vec![], options: Default::default(), allowed: vec![],

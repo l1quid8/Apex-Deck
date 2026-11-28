@@ -835,6 +835,102 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn chat_creation_keeps_project_scope_without_an_execution_folder() {
+        let (host, root) = fixture("chat-create");
+        std::fs::write(root.join("host-id"), "h").unwrap();
+        std::fs::create_dir(root.join("project")).unwrap();
+        let project = root.join("project").canonicalize().unwrap();
+        host.store().save_session(&json!({"workspaces":[{"id":"w","path":project}]})).unwrap();
+        host.change_assistant("a", |a| {
+            a.projects = serde_json::from_value(json!([{"project":{"workspaceId":"w","hostId":"h","cwd":project},"tools":"full"}])).unwrap();
+            a.allowed_folders = vec![project.to_string_lossy().into_owned()];
+            Ok(())
+        }).unwrap();
+        let created = call(&host, "app.thread.create", json!({"id":"chat","kind":"chat","title":"Chat QA"})).await;
+        assert!(created.ok, "{:?}", created.receipt.error);
+        let saved = host.store().room("chat").unwrap().unwrap();
+        assert!(saved.snapshot.kind.is_chat());
+        assert!(saved.cwd.is_none());
+        assert!(call(&host, "app.thread.read", json!({"id":"chat"})).await.ok);
+        // A pane's workspace ID cannot grant access to an unrelated native chat.
+        host.chat_create("unbound".into(), None, vec![], Default::default()).unwrap();
+        host.store().save_session(&json!({"workspaces":[{"id":"w","path":project},{"id":"alias","path":project}],"panes":[{"kind":"chat","id":"unbound","workspaceId":"w"}]})).unwrap();
+        assert!(!call(&host, "app.thread.read", json!({"id":"unbound"})).await.ok);
+        // Matching folder text under a different exact project is insufficient.
+        host.change_assistant("a", |a| { a.projects[0].project.workspace_id = "alias".into(); Ok(()) }).unwrap();
+        assert!(!call(&host, "app.thread.read", json!({"id":"chat"})).await.ok);
+        host.change_assistant("a", |a| { a.projects[0].project.workspace_id = "w".into(); Ok(()) }).unwrap();
+        let listed = call(&host, "app.thread.list", json!({})).await;
+        assert!(listed.data.as_array().unwrap().iter().any(|row| row["id"] == "chat"));
+        let renamed = call(&host, "app.thread.rename", json!({"id":"chat","title":"Renamed"})).await;
+        assert!(renamed.ok, "{:?}", renamed.receipt.error);
+        host.personal_admin_undo("a", &renamed.receipt.id).await.unwrap();
+        assert!(host.personal_admin_undo("a", &created.receipt.id).await.is_err(), "a later metadata revision invalidates the original undo");
+        let unused = call(&host, "app.thread.create", json!({"id":"unused-chat","kind":"chat"})).await;
+        assert!(unused.ok, "{:?}", unused.receipt.error);
+        host.personal_admin_undo("a", &unused.receipt.id).await.unwrap();
+        assert!(host.store().chat_meta("unused-chat").unwrap().unwrap().trashed_at.is_some());
+
+        let rejected = call(&host, "app.thread.create", json!({"id":"chat-cwd","kind":"chat","cwd":project})).await;
+        assert!(!rejected.ok);
+        assert!(host.store().room("chat-cwd").unwrap().is_none());
+        host.store().fail_next_room_save();
+        let failed = call(&host, "app.thread.create", json!({"id":"interrupted","kind":"chat"})).await;
+        assert!(!failed.ok);
+        assert!(host.store().room("interrupted").unwrap().is_none());
+        host.chat_create("interrupted".into(), None, vec![], Default::default()).unwrap();
+        assert!(!call(&host, "app.thread.read", json!({"id":"interrupted"})).await.ok);
+        // Editable catalog metadata cannot opt a native chat into scope.
+        let path = host.store().root().join("chat-meta-v1.json");
+        let mut metadata: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        metadata["unbound"] = json!({"assistantProject":{"hostId":"h","workspaceId":"w","cwd":project}});
+        std::fs::write(path, serde_json::to_vec(&metadata).unwrap()).unwrap();
+        assert!(!call(&host, "app.thread.read", json!({"id":"unbound"})).await.ok);
+        let scoped = call(&host, "app.thread.create", json!({"id":"scoped","kind":"chat"})).await;
+        assert!(scoped.ok, "{:?}", scoped.receipt.error);
+        host.change_assistant("a", |a| { a.projects[0].tools = crate::personal_workspace::ProjectTools::Ask; Ok(()) }).unwrap();
+        assert!(!call(&host, "app.thread.rename", json!({"id":"scoped","title":"Denied"})).await.ok);
+        host.change_assistant("a", |a| { a.allowed_folders.clear(); Ok(()) }).unwrap();
+        assert!(!call(&host, "app.thread.read", json!({"id":"scoped"})).await.ok);
+        host.change_assistant("a", |a| { a.projects.clear(); Ok(()) }).unwrap();
+        assert!(!call(&host, "app.thread.read", json!({"id":"scoped"})).await.ok);
+        assert!(!call(&host, "app.thread.create", json!({"id":"unassigned","kind":"chat"})).await.ok);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn chat_creation_selects_an_exact_project_and_delivers_its_initial_message() {
+        let (host, root) = fixture("chat-project-selector");
+        std::fs::write(root.join("host-id"), "h").unwrap();
+        let mut projects = Vec::new();
+        for id in ["one", "two"] {
+            std::fs::create_dir(root.join(id)).unwrap();
+            projects.push(json!({"project":{"hostId":"h","workspaceId":id,"cwd":root.join(id).canonicalize().unwrap()},"tools":"full"}));
+        }
+        host.store().save_session(&json!({"workspaces":projects.iter().map(|p| json!({"id":p["project"]["workspaceId"],"path":p["project"]["cwd"]})).collect::<Vec<_>>()})).unwrap();
+        host.change_assistant("a", |a| {
+            a.projects = serde_json::from_value(json!(projects)).unwrap();
+            a.allowed_folders = projects.iter().map(|p| p["project"]["cwd"].as_str().unwrap().into()).collect();
+            Ok(())
+        }).unwrap();
+        assert!(call(&host, "app.agent.create", json!({"profile":{"id":"maya","display_name":"Maya","backend":{"kind":"scripted"}}})).await.ok);
+        assert!(!call(&host, "app.thread.create", json!({"id":"ambiguous-chat","kind":"chat"})).await.ok);
+        let created = call(&host, "app.thread.create", json!({"id":"chat-two","kind":"chat","project":projects[1]["project"],"agents":["@maya"],"initialMessage":"@maya Please check the release."})).await;
+        assert!(created.ok, "{:?}", created.receipt.error);
+        assert!(created.data.get("sendError").is_none(), "{:?}", created.data);
+        let saved = host.store().room("chat-two").unwrap().unwrap();
+        assert!(saved.cwd.is_none());
+        assert_eq!(saved.snapshot.transcript.iter().filter(|m| m.text == "@maya Please check the release.").count(), 1);
+        let target = host.personal_room_target(&host.personal_get("a").unwrap(), "chat-two").unwrap();
+        assert_eq!(target.project.workspace_id, "two");
+        let duplicate = call(&host, "app.thread.create", json!({"id":"chat-two","kind":"chat","project":projects[0]["project"]})).await;
+        assert!(!duplicate.ok);
+        assert_eq!(host.personal_room_target(&host.personal_get("a").unwrap(), "chat-two").unwrap().project.workspace_id, "two");
+        host.room_stop("chat-two".into(), None);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
     async fn thread_lifecycle_emits_ui_navigate_and_supports_undo() {
         let (host, root) = fixture("threads");
         std::fs::write(root.join("host-id"), "h").unwrap();

@@ -279,7 +279,17 @@ jobs:
         # Two test files at a time: four cores booting four Chromiums at once
         # crashed scenarios silently, which reads as a failure with no output.
         if: ${{ !cancelled() }}
+        env:
+          APEX_MENU_DIAGNOSTICS_DIR: ${{ runner.temp }}/native-menu-diagnostics
         run: node --experimental-strip-types --test --test-concurrency=2 --test-shard=${{ matrix.shard }}/4 tests/*.test.mjs
+      - name: Preserve native menu crash evidence
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-menu-diagnostics-${{ matrix.shard }}
+          path: ${{ runner.temp }}/native-menu-diagnostics
+          if-no-files-found: ignore
+          retention-days: 7
 
   build:
     needs: changes
