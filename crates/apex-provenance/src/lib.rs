@@ -758,6 +758,7 @@ pub fn protected(name: &str) -> bool {
             | "assistant_message"
             | "assistant_task_action"
             | "personal_send"
+            | "personal_ship"
             | "personal_decide"
             | "personal_decide_always"
             | "room_post"

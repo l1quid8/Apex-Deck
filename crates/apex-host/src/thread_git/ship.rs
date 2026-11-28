@@ -57,6 +57,20 @@ pub(crate) fn ship_armed(transcript: &[Message], compaction: Option<&Compaction>
     false
 }
 
+/// Deck's note once GitHub has merged: the merge commit, whether the Mac's
+/// main folder now has it, and what became of the person's own edits there.
+pub(crate) fn merged_note(pr: &str, merge_commit: Option<&str>, deferred: Option<&super::Deferral>, kept_edits: usize) -> String {
+    let at = merge_commit.map(|sha| format!(" into main at {}", sha.get(..8).unwrap_or(sha))).unwrap_or_default();
+    match deferred {
+        None if kept_edits == 0 => format!("Merged {pr}{at}. Your Mac's main is updated. Awaiting your test."),
+        None => {
+            let kept = if kept_edits == 1 { "your 1 local change there was kept".to_owned() } else { format!("your {kept_edits} local changes there were kept") };
+            format!("Merged {pr}{at}. Your Mac's main is updated and {kept}. Awaiting your test.")
+        }
+        Some(why) => format!("Merged {pr}{at}. Your Mac's main wasn't updated: {why}. Its files are as you left them."),
+    }
+}
+
 /// Deck's note when the person cancels a merge.
 pub(crate) fn cancel_note(pr: Option<u64>) -> String {
     let what = pr.map(|pr| format!("the merge of PR #{pr}")).unwrap_or_else(|| "the merge".into());
@@ -64,7 +78,7 @@ pub(crate) fn cancel_note(pr: Option<u64>) -> String {
 }
 
 /// Deck's note when a ship line came without the person's words.
-pub(crate) const NOT_SAID: &str = "You haven't said \"ship it\" in this thread since the last merge, so Deck won't merge this on its own. Tap Merge once the checks pass.";
+pub(crate) const NOT_SAID: &str = "You haven't said \"ship it\" in this thread since the last merge, so Deck won't merge this on its own. Tap Ship it once the checks pass.";
 
 /// D1's other checks on a ship line: from the agent that owns the task
 /// folder holding the commit, at Full with Plan off, both when the turn began
@@ -173,6 +187,22 @@ mod tests {
         ] {
             assert!(!may_ship(owner, at_start, now, plan_at_start, plan_now), "{owner} access {at_start:?} then {now:?}, plan {plan_at_start} then {plan_now}");
         }
+    }
+
+    #[test]
+    fn the_merge_note_gives_the_commit_and_what_happened_on_the_mac() {
+        let commit = "1a2b3c4d5e6f".repeat(4);
+        assert_eq!(merged_note("PR #84", Some(&commit[..40]), None, 0), "Merged PR #84 into main at 1a2b3c4d. Your Mac's main is updated. Awaiting your test.");
+        assert_eq!(merged_note("PR #84", Some(&commit[..40]), None, 1), "Merged PR #84 into main at 1a2b3c4d. Your Mac's main is updated and your 1 local change there was kept. Awaiting your test.");
+        assert_eq!(merged_note("PR #84", Some(&commit[..40]), None, 3), "Merged PR #84 into main at 1a2b3c4d. Your Mac's main is updated and your 3 local changes there were kept. Awaiting your test.");
+        let deferred = crate::thread_git::Deferral::Files(vec!["README.md".into()]);
+        assert_eq!(merged_note("PR #84", Some(&commit[..40]), Some(&deferred), 0), "Merged PR #84 into main at 1a2b3c4d. Your Mac's main wasn't updated: these files on your Mac have changes the merge also touches: README.md. Its files are as you left them.");
+        assert_eq!(merged_note("fix/x", None, None, 0), "Merged fix/x. Your Mac's main is updated. Awaiting your test.");
+        // Every form still ends the "ship it" before it.
+        for kept in [0, 2] {
+            assert!(merged_note("PR #84", Some(&commit[..40]), None, kept).starts_with(MERGED_NOTE));
+        }
+        assert!(merged_note("PR #84", None, Some(&deferred), 0).starts_with(MERGED_NOTE));
     }
 
     #[test]

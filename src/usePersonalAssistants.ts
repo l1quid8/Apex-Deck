@@ -243,6 +243,9 @@ export class PersonalAssistantsCollection {
         if (result.taskId !== input.taskId) throw new Error("The host returned a control for a different task.");
         need(); await this.refresh(); return result;
       },
+      shipOffers: route.supports?.("assistant_ship_v1") !== true ? undefined : () => call("personal_ship_offers", {assistantId: need()}),
+      ship: route.supports?.("assistant_ship_v1") !== true ? undefined : (pr, head, repo) => call("personal_ship", {assistantId: need(), pr, head, repo}),
+      cancelShip: route.supports?.("assistant_ship_v1") !== true ? undefined : (room, expected) => call("room_thread_git_action", {id: room, action: {kind: "cancel_merge", expected}}),
       sendRequest: route.supports?.("assistant_voice_v1") !== true ? undefined : async (text, requestId) => {
         const result = await afterResult("personal_send", { requestId, text, ...sendContext() });
         if (!result.eventId) throw new Error("The host did not return the reply identity.");

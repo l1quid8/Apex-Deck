@@ -497,6 +497,8 @@ impl ThreadGit {
         }
         // A fast-forward keeps staged and unstaged edits to files the merge
         // doesn't touch; git refuses, naming them, when it would change them.
+        // What the person has changed there themselves, counted before the update.
+        let kept_edits = read(&["status", "--porcelain"]).map_or(0, |status| status.lines().filter(|line| !line.trim().is_empty()).count());
         if read(&["merge-base", "--is-ancestor", sha, "HEAD"]).is_err() {
             if let Err(why) = shell.run(data, &main, "git", &["merge", "--ff-only", sha]).await {
                 return Err(refusal(&why));
@@ -516,6 +518,7 @@ impl ThreadGit {
         Ok(self.update(room, w, |j| {
             j.phase = Phase::Merged;
             j.detail = detail;
+            j.kept_edits = kept_edits;
         })?)
     }
     pub fn defer_sync(&self, room: &str, w: &Workflow, why: &Deferral) -> Result<bool, String> {
@@ -851,3 +854,15 @@ impl ThreadGit {
 
 #[cfg(test)]
 mod tests;
+pub(crate) mod preflight;
+/// Everything that stands between this commit's pull request and main, with
+/// a failure to ask read as unknown.
+pub async fn readiness(data: &Path, w: &Workflow) -> preflight::Readiness {
+    #[cfg(test)]
+    if let Some((_, answer)) = FAKE_CHECKS.lock().unwrap().iter().find(|(head, _)| *head == w.head) {
+        return preflight::Readiness::of(answer.clone());
+    }
+    preflight::read(&ProjectShell, w, data)
+        .await
+        .unwrap_or_else(|why| preflight::Readiness::unknown(why.chars().take(300).collect::<String>()))
+}

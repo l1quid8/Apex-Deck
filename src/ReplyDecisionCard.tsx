@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { Backend } from "./backend";
-import { actOnDecision, suggestionsMode, type ReplyOffer } from "./replyDecision";
+import { actOnDecision, suggestionsMode, type PullStatusLine, type ReplyOffer } from "./replyDecision";
 import "./replyDecision.css";
 
 export function useReplyOffer(backend: Backend | null, id: string, enabled: boolean, seq: number | null, busy: boolean) {
@@ -38,6 +38,15 @@ export function useReplyOffer(backend: Backend | null, id: string, enabled: bool
     };
   }, [backend, id, enabled, seq, busy, revision]);
   return { offer: enabled && snapshot && snapshot.backend === backend && snapshot.room === id ? snapshot.offer : null, refresh };
+}
+
+const MARK = { ok: "✓", wait: "…", bad: "✕", unknown: "?" } as const;
+/** Checks, conflicts and review: what was looked at before the button is offered. */
+export function PullStatus({ status }: { status?: PullStatusLine[] }) {
+  if (!status?.length) return null;
+  return <ul className="pull-status" aria-label="Pull request status">
+    {status.map(line => <li key={line.label} className={line.state}><span aria-hidden="true">{MARK[line.state] ?? "?"}</span><b>{line.label}</b> {line.text}</li>)}
+  </ul>;
 }
 
 export function ReplyDecisionCard({ offer, backend, room, refresh, focused, report }: {
@@ -81,11 +90,12 @@ export function ReplyDecisionCard({ offer, backend, room, refresh, focused, repo
     {card.dismissible && <button className="dismiss" disabled={busy} aria-label="Dismiss decision" onClick={() => void choose(true)}>×</button>}
     {card.context && <p className="context">{card.context}</p>}
     <strong>{card.question}</strong>
+    <PullStatus status={card.status} />
     {card.detail && <details><summary>Show check output</summary><pre>{card.detail}</pre></details>}
     {label && <div className="actions">
-      <button className="primary" ref={primary} disabled={busy} onClick={() => void choose(false)}>{label}</button>
+      <button className="primary" ref={primary} disabled={busy || !!card.blocked} title={card.blocked} onClick={() => void choose(false)}>{label}</button>
       {card.dismissible && <button ref={later} disabled={busy} onClick={() => void choose(true)}>Not yet</button>}
-      <small>{card.turns === 0 ? "0 turns · Deck runs it" : "1 model turn"}</small>
+      <small>{card.blocked ? card.blocked : card.turns === 0 ? "0 turns · Deck runs it" : "1 model turn"}</small>
     </div>}
   </section>;
 }
