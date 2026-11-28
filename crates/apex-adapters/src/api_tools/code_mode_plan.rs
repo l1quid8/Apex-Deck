@@ -200,6 +200,15 @@ fn validate_pipe(pipe: Option<&Value>) -> Result<(), String> {
                     return Err("jsonLines requires a nonempty prefix".into());
                 }
             }
+            Some("fieldEquals") => {
+                if op["field"].as_str().is_none_or(str::is_empty)
+                    || !op
+                        .get("value")
+                        .is_some_and(|v| !v.is_array() && !v.is_object())
+                {
+                    return Err("fieldEquals requires a field name and a scalar value".into());
+                }
+            }
             Some("pick") => {
                 if op["fields"]
                     .as_array()
@@ -215,7 +224,7 @@ fn validate_pipe(pipe: Option<&Value>) -> Result<(), String> {
                 }
             }
             Some("length" | "lines") => (),
-            _ => return Err("unknown filter; use lines, jsonLines, pick, sum or length".into()),
+            _ => return Err("unknown filter; use lines, jsonLines, fieldEquals, pick, sum or length".into()),
         }
     }
     Ok(())
@@ -470,6 +479,24 @@ fn filter(value: &Value, op: &Value) -> Result<Value, String> {
             }
             Ok(Value::Array(rows))
         }
+        Some("fieldEquals") => {
+            let rows = value
+                .as_array()
+                .ok_or("fieldEquals expects a list of rows")?;
+            let key = op["field"].as_str().ok_or("invalid field")?;
+            let mut matches = Vec::new();
+            let mut size = 2;
+            for (index, row) in rows.iter().enumerate() {
+                let fields = row
+                    .as_object()
+                    .ok_or_else(|| format!("row {index}: expected an object"))?;
+                if fields.get(key) == op.get("value") {
+                    account(&mut size, row)?;
+                    matches.push(row.clone());
+                }
+            }
+            Ok(Value::Array(matches))
+        }
         Some("pick") => {
             let fields = op["fields"].as_array().ok_or("invalid fields")?;
             let pick = |row: &Value| -> Result<Value, String> {
@@ -531,5 +558,30 @@ fn filter(value: &Value, op: &Value) -> Result<Value, String> {
             other => Err(format!("got {}; expected text or a list", kind(other))),
         },
         _ => Err("unknown filter".into()),
+    }
+}
+
+#[cfg(test)]
+mod field_equals_tests {
+    use super::*;
+
+    #[test]
+    fn conditional_count_and_sum_preserve_types_and_skip_missing_fields() {
+        let rows = json!([{"x":"1","n":5},{"x":1,"n":11},{"n":17},{"x":null,"n":3}]);
+        for (value, count, sum) in [
+            (json!("1"), 1, 5.0),
+            (json!(null), 1, 3.0),
+            (json!("unknown"), 0, 0.0),
+        ] {
+            let op = json!({"op":"fieldEquals","field":"x","value":value});
+            validate_pipe(Some(&json!([op]))).unwrap();
+            let selected = filter(&rows, &op).unwrap();
+            assert_eq!(filter(&selected, &json!({"op":"length"})).unwrap(), count);
+            assert_eq!(
+                filter(&selected, &json!({"op":"sum","field":"n"})).unwrap(),
+                sum
+            );
+        }
+        assert!(validate_pipe(Some(&json!([{"op":"fieldEquals","field":"x"}]))).is_err());
     }
 }
