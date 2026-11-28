@@ -3,3 +3,6 @@
 #artifacts select, .suggestion-controls select { width: 12rem; max-width: 100%; }
 #artifacts select { margin-inline-start: auto; }
 .ph-suggestion-setting .settings-label { min-width: min(100%, 12rem); }
+#reply-suggestions:has([role="alert"]) { flex-wrap: wrap; }
+#reply-suggestions [role="alert"] { flex-basis: 100%; }
+.ph-suggestion-setting .suggestion-controls select { width: auto; }
